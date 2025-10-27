@@ -42,7 +42,7 @@ type AgentBuildSpec struct {
 	// Mode specifies which pipeline template to use (dev, dev-local, dev-external, preprod, prod, custom)
 	// This will be used to fetch the pipeline template from ConfigMap
 	// +optional
-	// +kubebuilder:validation:Enum=dev;dev-local;dev-external;preprod;prod;custom
+	// +kubebuilder:validation:Enum=dev;buildpack-dev;dev-local;dev-external;preprod;prod;custom
 	// +kubebuilder:default=dev
 	Mode string `json:"mode,omitempty"`
 	// Metadata specifies labels and annotations to be added to the agent

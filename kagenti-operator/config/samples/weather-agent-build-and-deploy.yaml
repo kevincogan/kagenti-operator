@@ -4,6 +4,7 @@ metadata:
   name: weather-agent-build
   namespace: kagenti
 spec:
+  mode: buildpack-dev
   source:
     sourceRepository: "github.com/kagenti/agent-examples.git"
     sourceRevision: "main"

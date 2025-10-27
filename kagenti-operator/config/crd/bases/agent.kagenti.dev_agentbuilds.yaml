@@ -118,6 +118,7 @@ spec:
                   This will be used to fetch the pipeline template from ConfigMap
                 enum:
                 - dev
+                - buildpack-dev
                 - dev-local
                 - dev-external
                 - preprod
