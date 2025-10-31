@@ -1,14 +1,14 @@
 apiVersion: agent.kagenti.dev/v1alpha1
 kind: AgentBuild
 metadata:
-  name: weather-agent-build
+  name: game-agent-build
   namespace: kagenti
 spec:
   mode: dev
   source:
-    sourceRepository: "github.com/kagenti/agent-examples.git"
+    sourceRepository: "github.com/a2aproject/a2a-samples.git"
     sourceRevision: "main"
-    sourceSubfolder: "a2a/weather_service"
+    sourceSubfolder: "samples/python/agents/dice_agent_rest"
     sourceCredentials:
       name: github-token-secret
 
@@ -19,7 +19,7 @@ spec:
       value: github-token-secret
 
   buildOutput:
-    image: "weather-service"
+    image: "game-service"
     imageTag: "v0.0.1"
     imageRegistry: "registry.cr-system.svc.cluster.local:5000"
     imageRepoCredentials:
@@ -29,22 +29,22 @@ spec:
 apiVersion: agent.kagenti.dev/v1alpha1
 kind: Agent
 metadata:
-  name: weather-agent
+  name: game-agent
   namespace: kagenti
   labels:
-    app: weather-service
+    app: game-service
 
   annotations:
-    description: "Weather data processing agent"
+    description: "Number guessing game agent"
 spec:
-  description: "Agent that processes weather data"
+  description: "Agent that plays a number guessing game"
 
   replicas: 1
 
   # Use existing container image
   imageSource:
     buildRef:
-      name: weather-agent-build
+      name: game-agent-build
 
   # Complete pod template specification
   podTemplateSpec:

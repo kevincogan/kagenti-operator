@@ -25,6 +25,7 @@ import (
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
@@ -42,6 +43,9 @@ type StepDefinition struct {
 
 	// Parameters contains step-specific parameters
 	Parameters []agentv1alpha1.ParameterSpec
+
+	// WhenExpressions contains conditional execution rules
+	WhenExpressions []agentv1alpha1.WhenExpression
 }
 
 // PipelineComposer handles composition of pipelines from individual steps
@@ -122,6 +126,21 @@ func (pc *PipelineComposer) loadStepsWithMergedParams(ctx context.Context, agent
 		if stepSpec.Enabled != nil && !*stepSpec.Enabled {
 			continue
 		}
+
+		pc.Logger.Info("Loading step from template",
+			"stepName", stepSpec.Name,
+			"configMap", stepSpec.ConfigMap,
+			"whenExpressionsCount", len(stepSpec.WhenExpressions))
+
+		// Log each when expression
+		for j, when := range stepSpec.WhenExpressions {
+			pc.Logger.Info("WhenExpression details",
+				"stepName", stepSpec.Name,
+				"index", j,
+				"input", when.Input,
+				"operator", when.Operator,
+				"values", when.Values)
+		}
 		order = append(order, stepSpec.Name)
 
 		configMap := &corev1.ConfigMap{}
@@ -149,10 +168,11 @@ func (pc *PipelineComposer) loadStepsWithMergedParams(ctx context.Context, agent
 
 		//Use merged global parameters instead of just Pipeline.Parameters
 		step := &StepDefinition{
-			Name:       stepSpec.Name,
-			ConfigMap:  stepSpec.ConfigMap,
-			TaskSpec:   taskSpec,
-			Parameters: pc.mergeTaskParameters(taskSpec.Params, globalParams),
+			Name:            stepSpec.Name,
+			ConfigMap:       stepSpec.ConfigMap,
+			TaskSpec:        taskSpec,
+			Parameters:      pc.mergeTaskParameters(taskSpec.Params, globalParams),
+			WhenExpressions: stepSpec.WhenExpressions,
 		}
 
 		steps[stepSpec.Name] = step
@@ -175,6 +195,7 @@ func (pc *PipelineComposer) createPipelineTasks(steps map[string]*StepDefinition
 					Steps:      stepDefinition.TaskSpec.Steps,
 					Workspaces: stepDefinition.TaskSpec.Workspaces,
 					Volumes:    stepDefinition.TaskSpec.Volumes,
+					Results:    stepDefinition.TaskSpec.Results,
 				},
 			},
 			Workspaces: []tektonv1.WorkspacePipelineTaskBinding{
@@ -188,10 +209,40 @@ func (pc *PipelineComposer) createPipelineTasks(steps map[string]*StepDefinition
 			previousTaskName := order[i-1]
 			task.RunAfter = []string{previousTaskName}
 		}
+		if len(stepDefinition.WhenExpressions) > 0 {
+			task.When = pc.convertWhenExpressions(stepDefinition.WhenExpressions)
+		}
 		tasks = append(tasks, task)
 	}
 
 	return tasks, nil
+}
+
+// converts custom WhenExpression to Tekton WhenExpression
+func (pc *PipelineComposer) convertWhenExpressions(whenExprs []agentv1alpha1.WhenExpression) []tektonv1.WhenExpression {
+	tektonWhens := make([]tektonv1.WhenExpression, 0, len(whenExprs))
+
+	for _, when := range whenExprs {
+		var operator selection.Operator
+		switch when.Operator {
+		case "in":
+			operator = selection.In
+		case "notin":
+			operator = selection.NotIn
+		default:
+			// Log warning or handle invalid operator
+			pc.Logger.Info("Invalid when expression operator, defaulting to 'in'", "operator", when.Operator)
+			operator = selection.In
+		}
+		tektonWhen := tektonv1.WhenExpression{
+			Input:    when.Input,
+			Operator: operator,
+			Values:   when.Values,
+		}
+		tektonWhens = append(tektonWhens, tektonWhen)
+	}
+
+	return tektonWhens
 }
 
 // mergeTaskParameters merges task parameters with component parameters
