@@ -249,11 +249,20 @@ func (d *KubernetesDeployer) createDeployment(ctx context.Context, component *pl
 
 	image := ""
 	if kubeSpec.ImageSpec != nil {
-		image = fmt.Sprintf("%s/%s:%s",
-			kubeSpec.ImageSpec.ImageRegistry,
-			kubeSpec.ImageSpec.Image,
-			kubeSpec.ImageSpec.ImageTag,
-		)
+		if kubeSpec.ImageSpec.ImageRegistry != "" {
+			// External registry - use full path with registry
+			image = fmt.Sprintf("%s/%s:%s",
+				kubeSpec.ImageSpec.ImageRegistry,
+				kubeSpec.ImageSpec.Image,
+				kubeSpec.ImageSpec.ImageTag,
+			)
+		} else {
+			// Local image - no registry prefix
+			image = fmt.Sprintf("%s:%s",
+				kubeSpec.ImageSpec.Image,
+				kubeSpec.ImageSpec.ImageTag,
+			)
+		}
 	}
 	imagePullSecrets := []corev1.LocalObjectReference{}
 	if kubeSpec.ImageSpec != nil && len(kubeSpec.ImageSpec.ImagePullSecrets) > 0 {
