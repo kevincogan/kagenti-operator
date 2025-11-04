@@ -394,8 +394,8 @@ type ImageSpec struct {
 	ImageTag string `json:"imageTag"`
 
 	// ImageRegistry is the container registry where the image is going to be pulled from
-	// +kubebuilder:validation:Required
-	ImageRegistry string `json:"imageRegistry"`
+	// +optional
+	ImageRegistry string `json:"imageRegistry,omitempty"`
 
 	// ImagePullPolicy defines when to pull the image
 	// +optional
