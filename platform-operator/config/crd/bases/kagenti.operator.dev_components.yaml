@@ -526,7 +526,6 @@ spec:
                             type: string
                         required:
                         - image
-                        - imageRegistry
                         - imageTag
                         type: object
                       manifest:
