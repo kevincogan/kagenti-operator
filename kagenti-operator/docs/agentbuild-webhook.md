@@ -76,9 +76,9 @@ When a new AgentBuild CR is created:
 
 The operator supports two build strategies that are **automatically selected at runtime** using Tekton's conditional execution feature called **when expressions**.
 
-#### 1. Dockerfile-based Build (Kaniko)
+#### 1. Dockerfile-based Build (Buildah)
 
-Used when a `Dockerfile` exists in your repository.
+Used when a `Dockerfile` or `Containerfile` exists in your repository.
 
 **Advantages:**
 
@@ -98,7 +98,7 @@ when:
 
 #### 2. Buildpack-based Build (Cloud Native Buildpacks CNB)
 
-Used when no `Dockerfile` is present. Supports:
+Used when no `Dockerfile`or `Containerfile` is present. Supports:
 
 - Python (detects `requirements.txt`, `Pipfile`, `pyproject.toml`)
 - Go (detects `go.mod`)
@@ -128,13 +128,13 @@ steps:
     task: check-dockerfile-step
     # Outputs: has-dockerfile result
   
-  - name: kaniko-build              # Step 2a: Conditional execution
+  - name: buildah-build              # Step 2a: Conditional execution
     runAfter: ["dockerfile-check"]
     when:
     - input: "$(tasks.dockerfile-check.results.has-dockerfile)"
       operator: in
       values: ["true"]
-    task: kaniko-docker-build-step
+    task: buildah-build-step
   
   - name: buildpack-step            # Step 2b: Conditional execution
     runAfter: ["dockerfile-check"]
@@ -213,10 +213,10 @@ data:
           "requiredParameters": ["subfolder-path"]
         },
         {
-          "name": "kaniko-build",
-          "configMap": "kaniko-docker-build-step",
+          "name": "buildah-build",
+          "configMap": "buildah-build-step",
           "enabled": true,
-          "description": "Build container image using Kaniko",
+          "description": "Build container image using buildah",
           "requiredParameters": ["image"],
           "whenExpressions": [
             {
@@ -224,8 +224,14 @@ data:
               "operator": "in",
               "values": ["true"]
             }
+          ],
+          "defaultParameters": [
+            {
+              "name": "DOCKERFILE",
+              "value": "$(tasks.dockerfile-check.results.dockerfile-name)"
+            }
           ]
-        },
+        },   
         {
           "name": "buildpack-step",
           "configMap": "buildpack-step",

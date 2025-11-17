@@ -84,8 +84,6 @@ data:
             $(params.image)
           
         env:
-          - name: CNB_PLATFORM_API
-            value: "0.13"
           - name: DOCKER_CONFIG
             value: /kaniko/.docker
         volumeMounts:

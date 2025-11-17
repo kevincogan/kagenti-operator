@@ -21,7 +21,10 @@ data:
         type: string
         description: Path to the subfolder
         default: "."
-    
+      - name: registry-secret
+        type: string
+        description: Name of the secret containing registry credentials
+        default: "ghcr-token"  
     workspaces:
       - name: source
     
@@ -38,6 +41,12 @@ data:
           
           cd $(workspaces.source.path)/$(params.subfolder-path)
           
+          # Set up registry authentication
+          export REGISTRY_AUTH_FILE=/root/.docker/config.json
+          # Configure rootless buildah with vfs storage driver
+          export BUILDAH_ISOLATION=chroot
+          export STORAGE_DRIVER=vfs
+          
           buildah build \
             --file $(params.DOCKERFILE) \
             --tag $(params.image) \
@@ -51,4 +60,21 @@ data:
           
           echo -n "$(params.image)" > $(results.IMAGE_URL.path)
         securityContext:
-          privileged: true
+          runAsUser: 1000
+          runAsNonRoot: true
+          capabilities:
+            add:
+             - SETUID
+             - SETGID
+        volumeMounts:
+          - name: docker-config
+            mountPath: /root/.docker
+            readOnly: true
+    
+    volumes:
+      - name: docker-config
+        secret:
+          secretName: $(params.registry-secret)
+          items:
+          - key: .dockerconfigjson
+            path: config.json  
