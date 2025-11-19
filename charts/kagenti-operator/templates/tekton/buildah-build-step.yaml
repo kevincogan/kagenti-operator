@@ -24,7 +24,7 @@ data:
       - name: registry-secret
         type: string
         description: Name of the secret containing registry credentials
-        default: "ghcr-token"  
+        default: "ghcr-secret"  
     workspaces:
       - name: source
     
@@ -35,6 +35,15 @@ data:
     steps:
       - name: build-image
         image: quay.io/buildah/stable:latest
+        env:
+          - name: STORAGE_DRIVER
+            value: vfs
+          - name: BUILDAH_ISOLATION
+            value: chroot
+          - name: XDG_RUNTIME_DIR
+            value: /tmp/run
+          - name: HOME
+            value: /tmp/home
         script: |
           #!/bin/bash
           set -e
@@ -46,16 +55,20 @@ data:
           # Configure rootless buildah with vfs storage driver
           export BUILDAH_ISOLATION=chroot
           export STORAGE_DRIVER=vfs
-          
+
+          AUTH="/workspace/.docker/config.json" 
+
           buildah build \
             --file $(params.DOCKERFILE) \
             --tag $(params.image) \
             --tls-verify=$(params.SKIP_TLS_VERIFY) \
             --layers \
+            --authfile $AUTH \
             .
           
           buildah push \
             --tls-verify=$(params.SKIP_TLS_VERIFY) \
+            --authfile $AUTH \
             $(params.image)
           
           echo -n "$(params.image)" > $(results.IMAGE_URL.path)
@@ -67,11 +80,23 @@ data:
              - SETUID
              - SETGID
         volumeMounts:
+          - name: varlibcontainers
+            mountPath: /var/lib/containers
+          - name: run
+            mountPath: /tmp/run
+          - name: homedir
+            mountPath: /tmp/home        
           - name: docker-config
-            mountPath: /root/.docker
+            mountPath: /workspace/.docker
             readOnly: true
     
     volumes:
+      - name: varlibcontainers
+        emptyDir: {}
+      - name: run
+        emptyDir: {}
+      - name: homedir
+        emptyDir: {}    
       - name: docker-config
         secret:
           secretName: $(params.registry-secret)

@@ -31,6 +31,10 @@ data:
         type: string
         description: Command to start the application
         default: "python __main__.py"  # Change to your actual start command
+      - name: CNB_PLATFORM_API
+        type: string
+        default: "0.13"
+        description: Cloud Native Buildpacks Platform API version        
     steps:
       - name: setup-build-files
         image: busybox
@@ -86,6 +90,8 @@ data:
         env:
           - name: DOCKER_CONFIG
             value: /kaniko/.docker
+          - name: CNB_PLATFORM_API
+            value: $(params.CNB_PLATFORM_API) 
         volumeMounts:
           - name: layers-dir
             mountPath: /layers
