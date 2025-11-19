@@ -298,148 +298,159 @@ func (d *KubernetesDeployer) createDeployment(ctx context.Context, component *pl
 		MountPath: "/opt",
 	}
 
+	mainContainer := corev1.Container{
+		Name:            component.Name,
+		Image:           image,
+		ImagePullPolicy: corev1.PullPolicy(imagePullPolicy),
+		Resources:       component.Spec.Deployer.Kubernetes.Resources,
+		Env:             mainEnvs,
+		Ports:           containerPorts,
+		VolumeMounts: append(
+			component.Spec.Deployer.Kubernetes.VolumeMounts,
+			sharedMount,
+			//			SVIDMount,
+		),
+	}
+
+	containers := []corev1.Container{
+		mainContainer,
+	}
+
+	baseVolumes := append(
+		component.Spec.Deployer.Kubernetes.Volumes,
+		sharedVolume,
+	)
+	if d.EnableClientRegistration {
+		baseVolumes = append(baseVolumes,
+			corev1.Volume{
+				Name: "spiffe-helper-config",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "spiffe-helper-config",
+						},
+					},
+				},
+			},
+			corev1.Volume{
+				Name: "spiffe-workload-api",
+				VolumeSource: corev1.VolumeSource{
+					CSI: &corev1.CSIVolumeSource{
+						Driver:   "csi.spiffe.io",
+						ReadOnly: func() *bool { b := true; return &b }(),
+					},
+				},
+			},
+			corev1.Volume{
+				Name: "svid-output",
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			},
+		)
+
+		// SPIFFE helper sidecar
+		spiffeHelper := corev1.Container{
+			Name:  "spiffe-helper",
+			Image: "ghcr.io/spiffe/spiffe-helper:nightly",
+			Command: []string{
+				"/spiffe-helper",
+				"-config=/etc/spiffe-helper/helper.conf",
+				"run",
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      "spiffe-helper-config",
+					MountPath: "/etc/spiffe-helper",
+				},
+				{
+					Name:      "spiffe-workload-api",
+					MountPath: "/spiffe-workload-api",
+				},
+				SVIDMount,
+			},
+		}
+
+		// Client registration sidecar
+		clientRegistration := corev1.Container{
+			Name:            "kagenti-client-registration",
+			Image:           "ghcr.io/kagenti/kagenti/client-registration:latest",
+			ImagePullPolicy: corev1.PullPolicy(imagePullPolicy),
+			Command: []string{
+				"/bin/sh",
+				"-c",
+				"while [ ! -f /opt/jwt_svid.token ]; do echo waiting for SVID; sleep 1; done; python client_registration.py; tail -f /dev/null",
+			},
+			Env: []corev1.EnvVar{
+				{
+					Name: "KEYCLOAK_URL",
+					ValueFrom: &corev1.EnvVarSource{
+						ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "environments",
+							},
+							Key:      "KEYCLOAK_URL",
+							Optional: ptr.To(true),
+						},
+					},
+				},
+				{
+					Name: "KEYCLOAK_REALM",
+					ValueFrom: &corev1.EnvVarSource{
+						ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "environments",
+							},
+							Key: "KEYCLOAK_REALM",
+						},
+					},
+				},
+				{
+					Name: "KEYCLOAK_ADMIN_USERNAME",
+					ValueFrom: &corev1.EnvVarSource{
+						ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "environments",
+							},
+							Key: "KEYCLOAK_ADMIN_USERNAME",
+						},
+					},
+				},
+				{
+					Name: "KEYCLOAK_ADMIN_PASSWORD",
+					ValueFrom: &corev1.EnvVarSource{
+						ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "environments",
+							},
+							Key: "KEYCLOAK_ADMIN_PASSWORD",
+						},
+					},
+				},
+				{
+					Name:  "CLIENT_NAME",
+					Value: component.Name,
+				},
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				sharedMount,
+				SVIDMount,
+			},
+		}
+
+		containers = append(containers, spiffeHelper, clientRegistration)
+	}
+
 	template := corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: labels,
 		},
 		Spec: corev1.PodSpec{
-			ServiceAccountName: component.Name,
-			Containers: []corev1.Container{
-				{
-					Name:            component.Name,
-					Image:           image,
-					ImagePullPolicy: corev1.PullPolicy(imagePullPolicy),
-					Resources:       component.Spec.Deployer.Kubernetes.Resources,
-					Env:             mainEnvs,
-					Ports:           containerPorts,
-					VolumeMounts: append(
-						component.Spec.Deployer.Kubernetes.VolumeMounts,
-						sharedMount,
-						SVIDMount,
-					),
-				},
-				{
-					Name:  "spiffe-helper",
-					Image: "ghcr.io/spiffe/spiffe-helper:nightly",
-					Command: []string{
-						"/spiffe-helper",
-						"-config=/etc/spiffe-helper/helper.conf",
-						"run",
-					},
-					VolumeMounts: []corev1.VolumeMount{
-						{
-							Name:      "spiffe-helper-config",
-							MountPath: "/etc/spiffe-helper",
-						},
-						{
-							Name:      "spiffe-workload-api",
-							MountPath: "/spiffe-workload-api",
-						},
-						SVIDMount,
-					},
-				},
-				{
-					Name:            "kagenti-client-registration",
-					Image:           "ghcr.io/kagenti/kagenti/client-registration:latest",
-					ImagePullPolicy: corev1.PullPolicy(imagePullPolicy),
-					// Wait until /opt/jwt_svid.token appears, then exec
-					Command: []string{
-						"/bin/sh",
-						"-c",
-						// TODO: tail -f /dev/null allows the container to stay alive. Change this to be a job.
-						"while [ ! -f /opt/jwt_svid.token ]; do echo waiting for SVID; sleep 1; done; python client_registration.py; tail -f /dev/null",
-					},
-					Env: []corev1.EnvVar{
-						{
-							Name: "KEYCLOAK_URL",
-							ValueFrom: &corev1.EnvVarSource{
-								ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "environments",
-									},
-									Key:      "KEYCLOAK_URL",
-									Optional: ptr.To(true),
-								},
-							},
-						},
-						{
-							Name: "KEYCLOAK_REALM",
-							ValueFrom: &corev1.EnvVarSource{
-								ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "environments",
-									},
-									Key: "KEYCLOAK_REALM",
-								},
-							},
-						},
-						{
-							Name: "KEYCLOAK_ADMIN_USERNAME",
-							ValueFrom: &corev1.EnvVarSource{
-								ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "environments",
-									},
-									Key: "KEYCLOAK_ADMIN_USERNAME",
-								},
-							},
-						},
-						{
-							Name: "KEYCLOAK_ADMIN_PASSWORD",
-							ValueFrom: &corev1.EnvVarSource{
-								ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "environments",
-									},
-									Key: "KEYCLOAK_ADMIN_PASSWORD",
-								},
-							},
-						},
-						{
-							Name:  "CLIENT_NAME",
-							Value: component.Name,
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{
-						sharedMount,
-						SVIDMount,
-					},
-				},
-			},
+			ServiceAccountName:            component.Name,
+			Containers:                    containers,
 			TerminationGracePeriodSeconds: &gracePeriodSeconds,
 			ImagePullSecrets:              imagePullSecrets,
-
-			Volumes: append(
-				component.Spec.Deployer.Kubernetes.Volumes,
-				[]corev1.Volume{
-					sharedVolume,
-					{
-						Name: "spiffe-helper-config",
-						VolumeSource: corev1.VolumeSource{
-							ConfigMap: &corev1.ConfigMapVolumeSource{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: "spiffe-helper-config",
-								},
-							},
-						},
-					},
-					{
-						Name: "spiffe-workload-api",
-						VolumeSource: corev1.VolumeSource{
-							CSI: &corev1.CSIVolumeSource{
-								Driver:   "csi.spiffe.io",
-								ReadOnly: func() *bool { b := true; return &b }(),
-							},
-						},
-					},
-					{
-						Name: "svid-output",
-						VolumeSource: corev1.VolumeSource{
-							EmptyDir: &corev1.EmptyDirVolumeSource{},
-						},
-					},
-				}...,
-			),
+			Volumes:                       baseVolumes,
 		},
 	}
 

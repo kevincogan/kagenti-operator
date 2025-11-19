@@ -10,6 +10,8 @@ controllerManager:
       - "--metrics-bind-address=:8443"
       - "--health-probe-bind-address=:8081"
       - "--webhook-cert-path=/tmp/k8s-webhook-server/serving-certs"
+      # uncomment to disable identity sidecar injection
+      # - "--enable-client-registration=false"
     cmd: /ko-app/cmd
     resources:
       limits:
