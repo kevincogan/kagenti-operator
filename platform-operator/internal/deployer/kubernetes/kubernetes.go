@@ -66,11 +66,12 @@ func NewKubernetesDeployer(client client.Client, log logr.Logger, scheme *runtim
 		EnableClientRegistration: enableClientRegistration,
 	}
 }
+
 func (b *KubernetesDeployer) GetName() string {
 	return "kubernetes"
 }
-func (d *KubernetesDeployer) Deploy(ctx context.Context, component *platformv1alpha1.Component) error {
 
+func (d *KubernetesDeployer) Deploy(ctx context.Context, component *platformv1alpha1.Component) error {
 	logger := d.Log.WithValues("deployer", component.Name, "Namespace", component.Namespace)
 	logger.Info("Deploying component with Kubernetes resources ***")
 
@@ -160,13 +161,11 @@ func (d *KubernetesDeployer) Deploy(ctx context.Context, component *platformv1al
 
 // Update existing component
 func (d *KubernetesDeployer) Update(ctx context.Context, component *platformv1alpha1.Component) error {
-
 	return nil
 }
 
 // Delete existing component
 func (d *KubernetesDeployer) Delete(ctx context.Context, component *platformv1alpha1.Component) error {
-
 	logger := d.Log.WithValues("component", component.Name, "Namespace", component.Namespace)
 	logger.Info("Deleting component's Kubernetes resources")
 
@@ -209,7 +208,6 @@ func (d *KubernetesDeployer) GetStatus(ctx context.Context, component *platformv
 }
 
 func (d *KubernetesDeployer) createDeployment(ctx context.Context, component *platformv1alpha1.Component, namespace string) error {
-
 	kubeSpec := component.Spec.Deployer.Kubernetes
 
 	if kubeSpec == nil {
@@ -231,7 +229,6 @@ func (d *KubernetesDeployer) createDeployment(ctx context.Context, component *pl
 			ContainerPort: 8080,
 			Protocol:      corev1.ProtocolSCTP,
 		})
-
 	}
 	labels := map[string]string{
 		"app.kubernetes.io/name":      component.Name,
@@ -428,6 +425,28 @@ func (d *KubernetesDeployer) createDeployment(ctx context.Context, component *pl
 					},
 				},
 				{
+					Name: "KEYCLOAK_TOKEN_EXCHANGE_ENABLED",
+					ValueFrom: &corev1.EnvVarSource{
+						ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "environments",
+							},
+							Key: "KEYCLOAK_TOKEN_EXCHANGE_ENABLED",
+						},
+					},
+				},
+				{
+					Name: "KEYCLOAK_CLIENT_REGISTRATION_ENABLED",
+					ValueFrom: &corev1.EnvVarSource{
+						ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "environments",
+							},
+							Key: "KEYCLOAK_CLIENT_REGISTRATION_ENABLED",
+						},
+					},
+				},
+				{
 					Name:  "CLIENT_NAME",
 					Value: component.Name,
 				},
@@ -481,7 +500,6 @@ func (d *KubernetesDeployer) createDeployment(ctx context.Context, component *pl
 	}
 
 	deployment := &appsv1.Deployment{
-
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      component.Name,
 			Namespace: namespace,
@@ -517,11 +535,9 @@ func (d *KubernetesDeployer) createDeployment(ctx context.Context, component *pl
 		return err
 	}
 	return nil
-
 }
 
 func (d *KubernetesDeployer) createService(ctx context.Context, component *platformv1alpha1.Component, namespace string) error {
-
 	kubeSpec := component.Spec.Deployer.Kubernetes
 
 	if kubeSpec == nil {
@@ -554,10 +570,8 @@ func (d *KubernetesDeployer) createService(ctx context.Context, component *platf
 			TargetPort: intstr.FromInt(8080),
 			Protocol:   corev1.ProtocolTCP,
 		})
-
 	}
 	service := &corev1.Service{
-
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      component.Name,
 			Namespace: component.Namespace,
@@ -591,6 +605,7 @@ func (d *KubernetesDeployer) createService(ctx context.Context, component *platf
 	}
 	return nil
 }
+
 func getComponentType(component *platformv1alpha1.Component) string {
 	if component.Spec.Agent != nil {
 		return "agent"
@@ -603,6 +618,7 @@ func getComponentType(component *platformv1alpha1.Component) string {
 	}
 	return "unknown"
 }
+
 func getReplicaCount(component *platformv1alpha1.Component) *int32 {
 	var count int32 = 1
 
@@ -615,8 +631,8 @@ func getReplicaCount(component *platformv1alpha1.Component) *int32 {
 	}
 	return &count
 }
-func (d *KubernetesDeployer) CheckComponentStatus(ctx context.Context, component *platformv1alpha1.Component) (bool, string, error) {
 
+func (d *KubernetesDeployer) CheckComponentStatus(ctx context.Context, component *platformv1alpha1.Component) (bool, string, error) {
 	logger := d.Log.WithValues("Kubernetes Deployer", component.Name, "namespace", component.Namespace)
 	logger.Info("CheckComponentStatus")
 
@@ -675,7 +691,6 @@ func (d *KubernetesDeployer) fetchAndApplyManifestsFromURL(ctx context.Context, 
 	objects, err := d.parseKubernetesManifest(string(content))
 	if err != nil {
 		return fmt.Errorf("failed to parse Kubernetes manifest from %s: %w", manifestURL, err)
-
 	}
 	// Apply each object
 	for _, obj := range objects {
@@ -697,7 +712,6 @@ func (d *KubernetesDeployer) fetchAndApplyManifestsFromURL(ctx context.Context, 
 				for k, v := range component.Annotations {
 					obj.GetAnnotations()[k] = v
 				}
-
 			}
 			mergedLabels := make(map[string]string)
 			// merge labels
@@ -756,7 +770,6 @@ func (d *KubernetesDeployer) fetchAndApplyManifestsFromGithub(ctx context.Contex
 	if err != nil {
 		return fmt.Errorf("failed to get content for %s/%s at path %s (revision %s): %w",
 			owner, repoName, manifestSpec.Path, manifestSpec.Revision, err)
-
 	}
 
 	if fileContent.Content == nil {
@@ -803,7 +816,6 @@ func (d *KubernetesDeployer) fetchAndApplyManifestsFromGithub(ctx context.Contex
 				for k, v := range component.Annotations {
 					obj.GetAnnotations()[k] = v
 				}
-
 			}
 			d.Log.Info("Merging Labels")
 			mergedLabels := make(map[string]string)
@@ -841,6 +853,7 @@ func (d *KubernetesDeployer) fetchAndApplyManifestsFromGithub(ctx context.Contex
 	d.Log.Info("Successfully applied all manifests from GitHub", "repository", manifestSpec.Repository, "path", manifestSpec.Path)
 	return nil
 }
+
 func (d *KubernetesDeployer) fetchContentWithRetry(ctx context.Context, ghClient *github.Client, owner, repoName string, manifestSpec *platformv1alpha1.GitHubSource, maxRetries int) (*github.RepositoryContent, error) {
 	for i := 0; i < maxRetries; i++ {
 		// Fetch manifest content from GitHub
@@ -857,7 +870,6 @@ func (d *KubernetesDeployer) fetchContentWithRetry(ctx context.Context, ghClient
 			if response.StatusCode != 503 {
 				return nil, fmt.Errorf("failed to get content for %s/%s at path %s (revision %s): %w",
 					owner, repoName, manifestSpec.Path, manifestSpec.Revision, err)
-
 			}
 			backoff := time.Duration(i+1) * 2 * time.Second
 			time.Sleep(backoff)
@@ -900,10 +912,10 @@ func (d *KubernetesDeployer) getSecretData(ctx context.Context, namespace, name 
 // parse YAML manifest string into Kubernetes (unstructured) objects
 func (d *KubernetesDeployer) parseKubernetesManifest(manifestContent string) ([]*unstructured.Unstructured, error) {
 	var objects []*unstructured.Unstructured
-	//d.Log.Info("parseKubernetesManifest", "raw manifest", manifestContent)
+	// d.Log.Info("parseKubernetesManifest", "raw manifest", manifestContent)
 
 	cleanedContent := d.cleanRawManifest(manifestContent)
-	//d.Log.Info("parseKubernetesManifest", "manifest", cleanedContent)
+	// d.Log.Info("parseKubernetesManifest", "manifest", cleanedContent)
 
 	decoder := yaml.NewYAMLOrJSONDecoder(strings.NewReader(cleanedContent), 4096)
 	docIndex := 0
@@ -911,7 +923,6 @@ func (d *KubernetesDeployer) parseKubernetesManifest(manifestContent string) ([]
 	for {
 		var obj map[string]interface{}
 		err := decoder.Decode(&obj)
-
 		if err != nil {
 			if err == io.EOF {
 				break // End of documents
@@ -1030,7 +1041,7 @@ func (d *KubernetesDeployer) cleanRawManifest(content string) string {
 			continue
 		}
 
-		//filter standalone comments but keep inline comments (eg. key: value # comment)
+		// filter standalone comments but keep inline comments (eg. key: value # comment)
 		if strings.HasPrefix(trimmedLine, "#") && !strings.Contains(trimmedLine, ":") {
 			continue
 		}
