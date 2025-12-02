@@ -31,6 +31,25 @@ spec:
             {{- range .Values.controllerManager.container.args }}
             - {{ . }}
             {{- end }}
+            {{- if .Values.signatureVerification.enabled }}
+            - --require-a2a-signature=true
+            {{- if .Values.signatureVerification.auditMode }}
+            - --signature-audit-mode=true
+            {{- end }}
+            - --signature-provider={{ .Values.signatureVerification.provider }}
+            {{- if eq .Values.signatureVerification.provider "secret" }}
+            - --signature-secret-name={{ .Values.signatureVerification.secret.name }}
+            - --signature-secret-namespace={{ .Values.signatureVerification.secret.namespace }}
+            {{- if .Values.signatureVerification.secret.key }}
+            - --signature-secret-key={{ .Values.signatureVerification.secret.key }}
+            {{- end }}
+            {{- else if eq .Values.signatureVerification.provider "jwks" }}
+            - --signature-jwks-url={{ .Values.signatureVerification.jwks.url }}
+            {{- end }}
+            {{- if .Values.signatureVerification.enforceNetworkPolicies }}
+            - --enforce-network-policies=true
+            {{- end }}
+            {{- end }}
           command:
             - {{ .Values.controllerManager.container.cmd }}
           image: {{ .Values.controllerManager.container.image.repository }}:{{ .Values.controllerManager.container.image.tag }}

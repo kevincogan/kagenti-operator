@@ -35,6 +35,7 @@ import (
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"github.com/kagenti/operator/internal/agentcard"
+	"github.com/kagenti/operator/internal/signature"
 )
 
 const (
@@ -59,8 +60,11 @@ var (
 // AgentCardReconciler reconciles an AgentCard object
 type AgentCardReconciler struct {
 	client.Client
-	Scheme       *runtime.Scheme
-	AgentFetcher agentcard.Fetcher
+	Scheme             *runtime.Scheme
+	AgentFetcher       agentcard.Fetcher
+	SignatureProvider  signature.Provider
+	RequireSignature   bool
+	SignatureAuditMode bool
 }
 
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agentcards,verbs=get;list;watch;create;update;patch;delete
@@ -140,10 +144,33 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// (agents may advertise 0.0.0.0:8000 which isn't useful for cluster communication)
 	cardData.URL = serviceURL
 
-	// Update the AgentCard status with the fetched card
-	if err := r.updateAgentCardStatus(ctx, agentCard, cardData, protocol); err != nil {
-		agentCardLogger.Error(err, "Failed to update AgentCard status")
-		return ctrl.Result{}, err
+	// Verify signature if enabled
+	if r.RequireSignature {
+		verificationResult, err := r.verifySignature(ctx, cardData)
+
+		// Always update status with verification result, even on failure
+		if err := r.updateAgentCardStatusWithVerification(ctx, agentCard, cardData, protocol, verificationResult); err != nil {
+			agentCardLogger.Error(err, "Failed to update AgentCard status")
+			return ctrl.Result{}, err
+		}
+
+		// Then check if we should reject
+		if err != nil && !r.SignatureAuditMode {
+			agentCardLogger.Error(err, "Signature verification error", "agent", agent.Name)
+			return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
+		}
+		if !verificationResult.Verified && !r.SignatureAuditMode {
+			agentCardLogger.Info("Signature verification failed, rejecting agent card",
+				"agent", agent.Name,
+				"details", verificationResult.Details)
+			return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
+		}
+	} else {
+		// Update the AgentCard status with the fetched card (no signature verification)
+		if err := r.updateAgentCardStatus(ctx, agentCard, cardData, protocol); err != nil {
+			agentCardLogger.Error(err, "Failed to update AgentCard status")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Calculate next sync time based on syncPeriod
@@ -236,6 +263,33 @@ func (r *AgentCardReconciler) getSyncPeriod(agentCard *agentv1alpha1.AgentCard) 
 	return duration
 }
 
+// verifySignature verifies the signature of an agent card
+func (r *AgentCardReconciler) verifySignature(ctx context.Context, cardData *agentv1alpha1.AgentCardData) (*signature.VerificationResult, error) {
+	startTime := time.Now()
+	defer func() {
+		duration := time.Since(startTime).Seconds()
+		signature.SignatureVerificationDuration.WithLabelValues(r.SignatureProvider.Name()).Observe(duration)
+	}()
+
+	result, err := r.SignatureProvider.VerifySignature(ctx, cardData, cardData.Signature)
+
+	// Ensure result is never nil
+	if result == nil {
+		result = &signature.VerificationResult{
+			Verified: false,
+			Details:  "Verification returned null result",
+		}
+	}
+
+	// Record metrics
+	signature.RecordVerification(r.SignatureProvider.Name(), result.Verified, r.SignatureAuditMode)
+	if err != nil {
+		signature.RecordError(r.SignatureProvider.Name(), "verification_error")
+	}
+
+	return result, err
+}
+
 // updateAgentCardStatus updates the AgentCard status with the fetched agent card
 func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCard *agentv1alpha1.AgentCard, cardData *agentv1alpha1.AgentCardData, protocol string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -261,6 +315,82 @@ func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCa
 			Reason:             "SyncSucceeded",
 			Message:            fmt.Sprintf("Successfully fetched agent card for %s", cardData.Name),
 		})
+
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "ReadyToServe",
+			Message:            "Agent index is ready for queries",
+		})
+
+		return r.Status().Update(ctx, latest)
+	})
+}
+
+// updateAgentCardStatusWithVerification updates the AgentCard status including signature verification results
+func (r *AgentCardReconciler) updateAgentCardStatusWithVerification(ctx context.Context, agentCard *agentv1alpha1.AgentCard, cardData *agentv1alpha1.AgentCardData, protocol string, verificationResult *signature.VerificationResult) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Fetch the latest version
+		latest := &agentv1alpha1.AgentCard{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      agentCard.Name,
+			Namespace: agentCard.Namespace,
+		}, latest); err != nil {
+			return err
+		}
+
+		// Update status fields
+		latest.Status.Card = cardData
+		latest.Status.Protocol = protocol
+		latest.Status.LastSyncTime = &metav1.Time{Time: time.Now()}
+		latest.Status.ValidSignature = &verificationResult.Verified
+		latest.Status.SignatureVerificationDetails = verificationResult.Details
+		latest.Status.SignatureKeyID = verificationResult.KeyID
+
+		// Update Synced condition based on verification result
+		// In audit mode, we still mark as Synced even if verification fails
+		// This allows the agent to function while we log/investigate issues
+		if verificationResult.Verified || r.SignatureAuditMode {
+			message := fmt.Sprintf("Successfully fetched agent card for %s", cardData.Name)
+			if !verificationResult.Verified && r.SignatureAuditMode {
+				message = fmt.Sprintf("Fetched agent card for %s (signature verification failed but audit mode enabled)", cardData.Name)
+			}
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:               "Synced",
+				Status:             metav1.ConditionTrue,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "SyncSucceeded",
+				Message:            message,
+			})
+		} else {
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:               "Synced",
+				Status:             metav1.ConditionFalse,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "InvalidSignature",
+				Message:            verificationResult.Details,
+			})
+		}
+
+		// Add signature verification condition
+		sigCondition := metav1.Condition{
+			Type:               "SignatureVerified",
+			LastTransitionTime: metav1.Now(),
+		}
+		if verificationResult.Verified {
+			sigCondition.Status = metav1.ConditionTrue
+			sigCondition.Reason = "SignatureValid"
+			sigCondition.Message = verificationResult.Details
+		} else {
+			sigCondition.Status = metav1.ConditionFalse
+			sigCondition.Reason = "SignatureInvalid"
+			sigCondition.Message = verificationResult.Details
+			if r.SignatureAuditMode {
+				sigCondition.Message += " (audit mode: allowed)"
+			}
+		}
+		meta.SetStatusCondition(&latest.Status.Conditions, sigCondition)
 
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
@@ -382,6 +512,16 @@ func (r *AgentCardReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Initialize the fetcher if not set
 	if r.AgentFetcher == nil {
 		r.AgentFetcher = agentcard.NewFetcher()
+	}
+
+	// Initialize the signature provider if not set and signature verification is required
+	if r.SignatureProvider == nil {
+		r.SignatureProvider = signature.NewNoOpProvider()
+	}
+
+	// Inject client into secret provider if needed
+	if secretProvider, ok := r.SignatureProvider.(*signature.SecretProvider); ok {
+		secretProvider.SetClient(r.Client)
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).

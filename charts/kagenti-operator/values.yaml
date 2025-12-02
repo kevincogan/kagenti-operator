@@ -83,3 +83,34 @@ certmanager:
 # [NETWORK POLICIES]: To enable NetworkPolicies set true
 networkPolicy:
   enable: false
+
+# [SIGNATURE VERIFICATION]: A2A AgentCard signature verification
+signatureVerification:
+  # Enable signature verification for A2A AgentCards
+  enabled: false
+  
+  # Audit mode: log verification failures but don't block agents
+  # Useful for testing and gradual rollout
+  auditMode: false
+  
+  # Signature provider type: "secret", "jwks", or "none"
+  provider: secret
+  
+  # Configuration for "secret" provider
+  secret:
+    # Name of the Kubernetes Secret containing public keys
+    name: a2a-public-keys
+    # Namespace of the Secret
+    namespace: kagenti-system
+    # Specific key in the Secret to use (leave empty to auto-detect)
+    key: ""
+  
+  # Configuration for "jwks" provider
+  jwks:
+    # URL of the JWKS endpoint
+    url: ""
+  
+  # Network policy enforcement
+  # When enabled, NetworkPolicies are created to enforce signature verification at the network layer
+  # Unverified agents will have restrictive network policies blocking agent-to-agent communication
+  enforceNetworkPolicies: false

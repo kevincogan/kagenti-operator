@@ -57,9 +57,17 @@ type AgentCardStatus struct {
 	// +optional
 	Protocol string `json:"protocol,omitempty"`
 
-	// ValidSignature indicates if the agent card signature was validated (future use)
+	// ValidSignature indicates if the agent card signature was validated
 	// +optional
 	ValidSignature *bool `json:"validSignature,omitempty"`
+
+	// SignatureVerificationDetails contains details about signature verification
+	// +optional
+	SignatureVerificationDetails string `json:"signatureVerificationDetails,omitempty"`
+
+	// SignatureKeyID is the key ID used for verification
+	// +optional
+	SignatureKeyID string `json:"signatureKeyId,omitempty"`
 }
 
 // AgentCardData represents the A2A agent card structure
@@ -100,6 +108,30 @@ type AgentCardData struct {
 	// SupportsAuthenticatedExtendedCard indicates if the agent has an extended card
 	// +optional
 	SupportsAuthenticatedExtendedCard *bool `json:"supportsAuthenticatedExtendedCard,omitempty"`
+
+	// Signature contains the A2A CardSignature for verification
+	// +optional
+	Signature *CardSignature `json:"signature,omitempty"`
+}
+
+// CardSignature represents an A2A AgentCard signature
+// Based on A2A specification section 5.5.6
+type CardSignature struct {
+	// Algorithm is the signature algorithm (e.g., "RS256", "ES256")
+	// +optional
+	Algorithm string `json:"algorithm,omitempty"`
+
+	// KeyID is the identifier of the key used to sign
+	// +optional
+	KeyID string `json:"keyId,omitempty"`
+
+	// Value is the base64-encoded signature value
+	// +required
+	Value string `json:"value"`
+
+	// Timestamp is when the signature was created
+	// +optional
+	Timestamp *metav1.Time `json:"timestamp,omitempty"`
 }
 
 // AgentCapabilities defines A2A feature support

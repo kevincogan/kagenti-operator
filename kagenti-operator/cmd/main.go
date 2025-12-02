@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,6 +41,7 @@ import (
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"github.com/kagenti/operator/internal/controller"
 	"github.com/kagenti/operator/internal/distribution"
+	"github.com/kagenti/operator/internal/signature"
 	webhookv1alpha1 "github.com/kagenti/operator/internal/webhook/v1alpha1"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	// +kubebuilder:scaffold:imports
@@ -68,6 +70,14 @@ func main() {
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	var enableClientRegistration bool
+	var requireA2ASignature bool
+	var signatureAuditMode bool
+	var signatureProvider string
+	var signatureSecretName string
+	var signatureSecretNamespace string
+	var signatureSecretKey string
+	var signatureJWKSURL string
+	var enforceNetworkPolicies bool
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -88,6 +98,22 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.BoolVar(&enableClientRegistration, "enable-client-registration", true,
 		"If set, Kagenti will register clients (agents and tools) in Keycloak")
+	flag.BoolVar(&requireA2ASignature, "require-a2a-signature", false,
+		"If set, A2A AgentCard signatures will be verified before allowing agent-to-agent communication")
+	flag.BoolVar(&signatureAuditMode, "signature-audit-mode", false,
+		"If set, signature verification failures will be logged but not block agent cards (requires --require-a2a-signature)")
+	flag.StringVar(&signatureProvider, "signature-provider", "secret",
+		"Signature verification provider type: 'secret', 'jwks', or 'none' (default: 'secret')")
+	flag.StringVar(&signatureSecretName, "signature-secret-name", "a2a-public-keys",
+		"Name of the Kubernetes Secret containing public keys for signature verification (for 'secret' provider)")
+	flag.StringVar(&signatureSecretNamespace, "signature-secret-namespace", "kagenti-system",
+		"Namespace of the Kubernetes Secret containing public keys (for 'secret' provider)")
+	flag.StringVar(&signatureSecretKey, "signature-secret-key", "",
+		"Key in the Secret to use for signature verification (if empty, will auto-detect)")
+	flag.StringVar(&signatureJWKSURL, "signature-jwks-url", "",
+		"URL of the JWKS endpoint for signature verification (for 'jwks' provider)")
+	flag.BoolVar(&enforceNetworkPolicies, "enforce-network-policies", false,
+		"If set, NetworkPolicies will be created to enforce signature verification at the network layer (requires --require-a2a-signature)")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -189,6 +215,53 @@ func main() {
 	distType := distribution.Detect(ctrl.GetConfigOrDie())
 	setupLog.Info("Detected Kubernetes distribution", "distribution", distType)
 
+	// Create signature verification provider if enabled
+	var sigProvider signature.Provider
+	if requireA2ASignature {
+		setupLog.Info("A2A signature verification enabled",
+			"provider", signatureProvider,
+			"auditMode", signatureAuditMode)
+
+		providerConfig := &signature.Config{
+			AuditMode: signatureAuditMode,
+		}
+
+		switch signatureProvider {
+		case "secret":
+			providerConfig.Type = signature.ProviderTypeSecret
+			providerConfig.SecretName = signatureSecretName
+			providerConfig.SecretNamespace = signatureSecretNamespace
+			providerConfig.SecretKey = signatureSecretKey
+			setupLog.Info("Using Secret-based signature provider",
+				"secretName", signatureSecretName,
+				"secretNamespace", signatureSecretNamespace)
+		case "jwks":
+			providerConfig.Type = signature.ProviderTypeJWKS
+			providerConfig.JWKSURL = signatureJWKSURL
+			if signatureJWKSURL == "" {
+				setupLog.Error(fmt.Errorf("JWKS URL is required"), "JWKS provider requires --signature-jwks-url")
+				os.Exit(1)
+			}
+			setupLog.Info("Using JWKS-based signature provider", "url", signatureJWKSURL)
+		case "none":
+			providerConfig.Type = signature.ProviderTypeNone
+			setupLog.Info("Using NoOp signature provider (verification disabled)")
+		default:
+			setupLog.Error(fmt.Errorf("unknown provider type"), "Invalid signature provider", "provider", signatureProvider)
+			os.Exit(1)
+		}
+
+		var err error
+		sigProvider, err = signature.NewProvider(providerConfig)
+		if err != nil {
+			setupLog.Error(err, "Failed to create signature provider")
+			os.Exit(1)
+		}
+	} else {
+		setupLog.Info("A2A signature verification disabled")
+		sigProvider = signature.NewNoOpProvider()
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsServerOptions,
@@ -244,8 +317,11 @@ func main() {
 	}
 
 	if err = (&controller.AgentCardReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		SignatureProvider:  sigProvider,
+		RequireSignature:   requireA2ASignature,
+		SignatureAuditMode: signatureAuditMode,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentCard")
 		os.Exit(1)
@@ -256,6 +332,22 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentCardSync")
 	}
+
+	// Setup NetworkPolicy controller if network enforcement is enabled
+	if enforceNetworkPolicies && requireA2ASignature {
+		setupLog.Info("Enabling NetworkPolicy enforcement for signature verification")
+		if err = (&controller.AgentCardNetworkPolicyReconciler{
+			Client:                 mgr.GetClient(),
+			Scheme:                 mgr.GetScheme(),
+			EnforceNetworkPolicies: enforceNetworkPolicies,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "AgentCardNetworkPolicy")
+			os.Exit(1)
+		}
+	} else if enforceNetworkPolicies && !requireA2ASignature {
+		setupLog.Info("Warning: --enforce-network-policies requires --require-a2a-signature to be enabled")
+	}
+
 	if err = webhookv1alpha1.SetupAgentBuildWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "AgentBuild")
 		os.Exit(1)

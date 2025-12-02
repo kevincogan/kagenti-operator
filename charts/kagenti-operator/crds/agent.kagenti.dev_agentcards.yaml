@@ -119,6 +119,26 @@ spec:
                   name:
                     description: Name is the human-readable name of the agent
                     type: string
+                  signature:
+                    description: Signature contains the A2A CardSignature for verification
+                    properties:
+                      algorithm:
+                        description: Algorithm is the signature algorithm (e.g., "RS256",
+                          "ES256")
+                        type: string
+                      keyId:
+                        description: KeyID is the identifier of the key used to sign
+                        type: string
+                      timestamp:
+                        description: Timestamp is when the signature was created
+                        format: date-time
+                        type: string
+                      value:
+                        description: Value is the base64-encoded signature value
+                        type: string
+                    required:
+                    - value
+                    type: object
                   skills:
                     description: Skills is a list of skills/capabilities this agent
                       offers
@@ -250,9 +270,16 @@ spec:
               protocol:
                 description: Protocol is the detected agent protocol (e.g., "a2a")
                 type: string
+              signatureKeyId:
+                description: SignatureKeyID is the key ID used for verification
+                type: string
+              signatureVerificationDetails:
+                description: SignatureVerificationDetails contains details about signature
+                  verification
+                type: string
               validSignature:
                 description: ValidSignature indicates if the agent card signature
-                  was validated (future use)
+                  was validated
                 type: boolean
             type: object
         type: object

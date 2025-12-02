@@ -1,0 +1,30 @@
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: Agent
+metadata:
+  name: weather-agent-signed
+  namespace: default
+  labels:
+    kagenti.io/type: agent
+    kagenti.io/agent-protocol: a2a
+spec:
+  image: example/weather-agent:v1.0.0
+  replicas: 1
+  env:
+    - name: AGENT_NAME
+      value: "Weather Agent"
+    - name: AGENT_DESCRIPTION
+      value: "Provides weather information"
+---
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentCard
+metadata:
+  name: weather-agent-card
+  namespace: default
+spec:
+  syncPeriod: "30s"
+  selector:
+    matchLabels:
+      kagenti.io/type: agent
+      app.kubernetes.io/name: weather-agent-signed
+
+
