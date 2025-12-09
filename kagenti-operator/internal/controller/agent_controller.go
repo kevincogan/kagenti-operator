@@ -374,54 +374,24 @@ func (r *AgentReconciler) createDeploymentForAgent(ctx context.Context, agent *a
 			labels[k] = v
 		}
 	}
-	clientId := agent.Namespace + "/" + agent.Name
-	mainEnvs := podTemplateSpec.Spec.Containers[0].Env
-	mainEnvs = append(mainEnvs, []corev1.EnvVar{
-		{
-			Name:  "CLIENT_NAME",
-			Value: clientId,
-		},
-		{
-			Name:  "NAMESPACE",
-			Value: agent.Namespace,
-		},
-		{
-			Name:  "UV_CACHE_DIR",
-			Value: "/app/.cache/uv",
-		},
-	}...)
 
-	for inx := range podTemplateSpec.Spec.Containers {
-		if podTemplateSpec.Spec.Containers[inx].Env != nil {
-			podTemplateSpec.Spec.Containers[inx].Env = append(podTemplateSpec.Spec.Containers[inx].Env, mainEnvs...)
-		} else {
-			podTemplateSpec.Spec.Containers[inx].Env = mainEnvs
-		}
-		// if the agent is deployed from an existing container image (not built from source) use the
-		// image from 'agent.Spec.ImageSource.Image'
-		if inx == 0 && agent.Spec.ImageSource.Image != nil {
-			podTemplateSpec.Spec.Containers[inx].Image = *agent.Spec.ImageSource.Image
+	for i := range podTemplateSpec.Spec.Containers {
+		container := &podTemplateSpec.Spec.Containers[i]
+
+		if i == 0 && agent.Spec.ImageSource.Image != nil {
+			container.Image = *agent.Spec.ImageSource.Image
 		}
 
-		containerPorts := []corev1.ContainerPort{}
-		if podTemplateSpec.Spec.Containers[inx].Ports == nil {
-			containerPorts = append(containerPorts, corev1.ContainerPort{
-				Name:          "http",
-				ContainerPort: 8000,
-				Protocol:      corev1.ProtocolTCP,
-			})
-		} else {
-			for _, port := range podTemplateSpec.Spec.Containers[inx].Ports {
-				containerPorts = append(containerPorts, corev1.ContainerPort{
-					Name:          port.Name,
-					ContainerPort: port.ContainerPort,
-					Protocol:      port.Protocol,
-				})
+		if len(container.Ports) == 0 {
+			container.Ports = []corev1.ContainerPort{
+				{
+					Name:          "http",
+					ContainerPort: 8000,
+					Protocol:      corev1.ProtocolTCP,
+				},
 			}
 		}
-		podTemplateSpec.Spec.Containers[inx].Ports = containerPorts
 	}
-
 	// Get the image for the main container
 	image, err := r.getContainerImage(ctx, agent)
 	if err != nil {
