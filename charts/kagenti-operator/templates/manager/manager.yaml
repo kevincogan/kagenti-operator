@@ -4,7 +4,7 @@ metadata:
   labels:
     control-plane: controller-manager
     {{- include "chart.labels" . | nindent 4 }}
-  name: system
+  name: {{ .Release.Namespace }}
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -168,6 +168,18 @@ func (r *AgentBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			agentBuildlogger.Error(err, "Failed to cleanup Builder resource", "AgentBuild", agentBuild.Name)
 			return ctrl.Result{}, err
 		}
+		if agentBuild.Spec.CleanupAfterBuild {
+			r.Recorder.Event(agentBuild, corev1.EventTypeNormal, "CleanupCompleted",
+				"Build resources cleaned up successfully")
+			agentBuildlogger.Info("Cleanup completed", "AgentBuild", agentBuild.Name)
+		}
+
+		// Mark as complete and stop reconciling
+		agentBuild.Status.Message = "Build complete, cleanup done"
+		if err := r.Status().Update(ctx, agentBuild); err != nil {
+			return ctrl.Result{RequeueAfter: defaultRequeueDelay}, err
+		}
+
 	}
 
 	return ctrl.Result{}, nil

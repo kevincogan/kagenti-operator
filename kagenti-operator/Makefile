@@ -20,8 +20,12 @@ IMG ?= ${KO_DOCKER_REPO}/${CMD_NAME}:${IMAGE_TAG}
 ARCH := $(shell go env GOARCH)
 OS := $(shell go env GOOS)
 
-CLUSTER ?= agent-platform
-CONTEXT ?= kind-agent-platform
+# CLUSTER specifies the Kubernetes cluster name to use for deployment.
+# Default is "kagenti".
+# If you need to deploy to a different cluster (e.g., in CI/CD or your local environment),
+# override this by running 'make CLUSTER=your-cluster-name ...' or by setting the CLUSTER environment variable.
+CLUSTER ?= kagenti
+CONTEXT ?= kind-kagenti
 
 HELM_IMG := --set controllerManager.container.image.repository=${KO_DOCKER_REPO}/${CMD_NAME} --set controllerManager.container.image.tag=${IMAGE_TAG}
 HELM_OPTS ?= ${HELM_IMG}

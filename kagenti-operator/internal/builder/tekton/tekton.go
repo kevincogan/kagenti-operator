@@ -85,15 +85,33 @@ func (b *TektonBuilder) Cleanup(ctx context.Context, agentBuild *agentv1alpha1.A
 		b.Log.Error(err, "Failed to list pods for PipelineRun", "pipelineRunName", pipelineRunName)
 		return err
 	}
-
-	// Filter for completed pods (Succeeded)
+	// Check if any pods are still running
+	var runningPods int
 	var completedPods []corev1.Pod
 	for _, pod := range podList.Items {
-		if pod.Status.Phase == corev1.PodSucceeded {
+		switch pod.Status.Phase {
+		case corev1.PodSucceeded, corev1.PodFailed:
 			completedPods = append(completedPods, pod)
+		case corev1.PodRunning, corev1.PodPending:
+			runningPods++
 		}
 	}
 
+	// If pods still running, wait before cleanup
+	if runningPods > 0 {
+		b.Log.Info("Pods still running, deferring cleanup",
+			"running", runningPods,
+			"completed", len(completedPods))
+		return fmt.Errorf("cleanup deferred: %d pods still running", runningPods)
+	}
+	// Filter for completed pods (Succeeded)
+	/*	var completedPods []corev1.Pod
+		for _, pod := range podList.Items {
+			if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodUnknown {
+				completedPods = append(completedPods, pod)
+			}
+		}
+	*/
 	var errs []error
 	for _, pod := range completedPods {
 		if err := b.Delete(ctx, &pod); err != nil && !errors.IsNotFound(err) {
@@ -104,6 +122,10 @@ func (b *TektonBuilder) Cleanup(ctx context.Context, agentBuild *agentv1alpha1.A
 	if len(errs) > 0 {
 		return fmt.Errorf("failed to delete %d pods", len(errs))
 	}
+	b.Log.Info("Cleanup completed successfully",
+		"pipelineRun", pipelineRunName,
+		"podsDeleted", len(completedPods))
+
 	return nil
 }
 func (b *TektonBuilder) createPipelineRun(ctx context.Context, agentBuild *agentv1alpha1.AgentBuild) error {
