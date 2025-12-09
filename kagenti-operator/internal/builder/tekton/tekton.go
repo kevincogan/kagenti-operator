@@ -105,13 +105,6 @@ func (b *TektonBuilder) Cleanup(ctx context.Context, agentBuild *agentv1alpha1.A
 		return fmt.Errorf("cleanup deferred: %d pods still running", runningPods)
 	}
 	// Filter for completed pods (Succeeded)
-	/*	var completedPods []corev1.Pod
-		for _, pod := range podList.Items {
-			if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodUnknown {
-				completedPods = append(completedPods, pod)
-			}
-		}
-	*/
 	var errs []error
 	for _, pod := range completedPods {
 		if err := b.Delete(ctx, &pod); err != nil && !errors.IsNotFound(err) {
