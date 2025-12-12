@@ -146,8 +146,8 @@ spec:
   pipeline:
      namespace: kagenti-system
      parameters:
-      - name: PYTHON_VERSION
-      value: "3.13"
+       - name: PYTHON_VERSION
+         value: "3.13"
   source:
     sourceRepository: "github.com/kagenti/agent-examples"
     sourceRevision: "main"
