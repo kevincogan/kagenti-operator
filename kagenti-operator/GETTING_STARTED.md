@@ -353,7 +353,7 @@ mcp-[server-name]-proxy.[namespace].svc.cluster.local
 ### Test Weather Query
 
 This example sends a weather query for New York to the weather-agent, which will communicate with the MCPServer to retrieve the weather information.
-
+```bash
 kubectl run curl-pod -i --tty --rm \
   --image=curlimages/curl:8.1.2 -n team1 -- \
   curl -sS -X POST http://weather-agent.team1.svc.cluster.local:8000/ \
