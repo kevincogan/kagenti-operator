@@ -551,7 +551,7 @@ kubectl describe pod -n team1 -l toolhive-basename=weather-tool
 kubectl get svc weather-agent -n team1
 
 # Test connectivity from within the cluster using a temporary curl pod
-kubectl run test-curl --image=curlimages/curl:latest --rm -i --restart=Never -n team1 -- \
+kubectl run test-curl --image=curlimages/curl:8.1.2 --rm -i --restart=Never -n team1 -- \
   curl -v http://weather-agent.team1.svc.cluster.local:8000/health
 
 # Check if agent can reach MCP server
