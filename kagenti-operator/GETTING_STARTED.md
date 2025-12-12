@@ -613,8 +613,8 @@ spec:
 
 ## Next Steps
 
-- **Custom Pipelines**: NA
-- **Advanced Configuration**: NA
+- **Custom Pipelines**: TODO: Documentation coming soon.
+- **Advanced Configuration**: TODO: Documentation coming soon.
 - **Webhook Details**: See [AgentBuild Webhook](docs/agentbuild-webhook.md)
 
 ---
