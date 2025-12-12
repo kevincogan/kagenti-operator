@@ -524,7 +524,7 @@ kubectl get agentbuild weather-agent-build -n team1 -o yaml | grep -A10 status
 
 # View build logs
 kubectl get pods -n team1 -l app.kubernetes.io/component=weather-agent-build
-kubectl logs  -n team1
+kubectl logs $(kubectl get pods -n team1 -l app.kubernetes.io/component=weather-agent-build -o jsonpath='{.items[0].metadata.name}') -n team1
 ```
 
 ### MCP Server Not Starting
