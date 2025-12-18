@@ -597,7 +597,7 @@ func (r *AgentReconciler) handleDeletion(ctx context.Context, agent *agentv1alph
 		}
 
 		service := &corev1.Service{}
-		serviceName := agent.Name + "-svc"
+		serviceName := agent.Name
 		err = r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: agent.Namespace}, service)
 		if err == nil {
 			logger.Info("Deleting service for Agent", "serviceName", serviceName)

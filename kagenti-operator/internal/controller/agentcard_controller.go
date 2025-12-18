@@ -196,8 +196,8 @@ func (r *AgentCardReconciler) getAgentProtocol(agent *agentv1alpha1.Agent) strin
 
 // getAgentService retrieves the Service for an Agent
 func (r *AgentCardReconciler) getAgentService(ctx context.Context, agent *agentv1alpha1.Agent) (*corev1.Service, error) {
-	// Service name follows the pattern: <agent-name>-svc
-	serviceName := agent.Name + "-svc"
+	// Service name follows the pattern: <agent-name>
+	serviceName := agent.Name
 	service := &corev1.Service{}
 
 	err := r.Get(ctx, types.NamespacedName{

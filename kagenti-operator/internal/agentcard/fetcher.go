@@ -117,9 +117,9 @@ func (f *DefaultFetcher) fetchA2ACard(ctx context.Context, serviceURL string) (*
 }
 
 // GetServiceURL constructs the service URL for an agent
-// Following the pattern from agent_controller.go where services are named <agent-name>-svc
+// Following the pattern from agent_controller.go where services are named <agent-name>
 func GetServiceURL(agentName, namespace string, port int32) string {
 	// Use cluster DNS for service discovery
 	// Format: http://<service-name>.<namespace>.svc.cluster.local:<port>
-	return fmt.Sprintf("http://%s-svc.%s.svc.cluster.local:%d", agentName, namespace, port)
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", agentName, namespace, port)
 }

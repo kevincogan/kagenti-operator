@@ -48,7 +48,7 @@ var _ = Describe("AgentCard Controller", func() {
 		const (
 			agentName     = "test-card-agent"
 			agentCardName = "test-agentcard"
-			serviceName   = "test-card-agent-svc"
+			serviceName   = "test-card-agent"
 			namespace     = "default"
 		)
 
@@ -207,7 +207,7 @@ var _ = Describe("AgentCard Controller", func() {
 			}).Should(BeTrue())
 
 			By("verifying the URL was overridden with the service URL")
-			expectedURL := "http://test-card-agent-svc.default.svc.cluster.local:8000"
+			expectedURL := "http://test-card-agent.default.svc.cluster.local:8000"
 			Expect(agentCard.Status.Card.URL).To(Equal(expectedURL))
 
 			By("verifying other card data was preserved")
