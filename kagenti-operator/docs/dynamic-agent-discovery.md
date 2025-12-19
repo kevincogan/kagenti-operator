@@ -8,7 +8,7 @@ Dynamic agent discovery solves a fundamental challenge in multi-agent systems: *
 
 ## Problem Statement
 
-Agent discovery followed by invocation is a complex problem in agentic systems. Existing solutions like [Agntcy Dir](https://github.com/agntcy/dir) are experimental and require external packages with rapidly changing interfaces. Kagenti provides a straightforward, durable, and Kubernetes-native solution that:
+Agent discovery followed by invocation is a complex problem in agentic systems. Kagenti provides a straightforward, durable, and Kubernetes-native solution that:
 
 - Works with existing Kubernetes tooling (`kubectl`, `oc`)
 - Requires no external registry or service
