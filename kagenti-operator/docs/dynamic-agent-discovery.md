@@ -289,7 +289,7 @@ conditions:
   status: "True"
   reason: ReadyToServe
   message: "Agent index is ready for queries"
-  lastTransitionTime: "2025-12-19T10:30:00Z"
+  lastTransitionTime: "YYYY-MM-DDTHH:MM:SSZ"
 ```
 
 ## Security Considerations
