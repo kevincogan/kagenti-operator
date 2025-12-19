@@ -683,8 +683,8 @@ The AgentCard is automatically created by the operator.
 kubectl get agentcards
 
 # Example output:
-# NAME                 PROTOCOL   AGENT               SYNCED   LASTSYNC   AGE
-# weather-agent-card   a2a        Weather Assistant   True     5m         10m
+# NAME                 PROTOCOL   AGENT          SYNCED   LASTSYNC   AGE
+# weather-agent-card   a2a        weather-agent  True     5m         10m
 
 # Get detailed information
 kubectl describe agentcard weather-agent-card
