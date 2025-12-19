@@ -586,7 +586,7 @@ The `AgentCard` Custom Resource stores agent metadata for dynamic discovery and 
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `matchLabels` | map[string]string | Yes | Label selector to match against Agent resources |
+| `matchLabels` | map[string]string | Yes | Label selector to identify pods belonging to the Agent (used to find the Agent's workload) |
 
 ### Status Fields
 
