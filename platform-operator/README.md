@@ -1,5 +1,15 @@
 # Kubernetes Operator for Agentic Platform Component Management
 
+> **⚠️ DEPRECATED**: This operator is deprecated in favor of the [Kagenti Operator](../kagenti-operator/README.md). 
+> 
+> The Platform Operator provided complex multi-component orchestration that proved to be over-engineered for most use cases. The simpler [Kagenti Operator](../kagenti-operator/README.md) focuses on individual agent lifecycle management, which better aligns with Kubernetes best practices and user needs.
+>
+> **Migration Path**: Use separate `Agent` CRs instead of `Component` CRs within `Platform` CRs. See the [Kagenti Operator documentation](../kagenti-operator/README.md) for details.
+>
+> **Support**: This operator will continue to receive critical bug fixes but no new features. We recommend migrating to the Kagenti Operator for new deployments.
+
+---
+
 A Kubernetes operator designed to deploy and manage multi-component applications, incorporating Tekton build pipelines and lifecycle orchestration.
 
 ## Overview

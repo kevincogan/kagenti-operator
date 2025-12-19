@@ -1,10 +1,19 @@
 # kagenti-operator
 
-This repository contains Kubernetes operator for managing AI agents.
-## Platform Operator
-The Platform operator, located in [platform-operator/](platform-operator/) directory, simplifies the deployment of complex applications by managing collections of components through two key Custom Resources: Platform and Component.
-* **`Component`**: The Component CR represents an individual deployable unit within a platform, with each component being exactly one of three types: Agent (AI/ML applications), Tool (utilities and supporting services), or Infrastructure (databases and foundational services). The Component controller manages the complete lifecycle from build execution through deployment, while the component starts in a suspended state until activated by the Platform controller based on dependency requirements and execution order.
+This repository contains the Kubernetes operator for managing AI agents.
 
-* **`Platform`**: The Platform CR serves as a high-level orchestrator that manages collections of related Component CRs as a cohesive application unit. It defines the execution order and dependency relationships between components, ensuring that infrastructure components are deployed before the applications that depend on them.
+## Kagenti Operator
 
-For detailed information about the Platform operator, including its proposal, design, CRD definitions, and implementation details, please refer to the [README.md](platform-operator/README.md) in the `platform-operator` directory.
+The Kagenti Operator, located in the [kagenti-operator/](kagenti-operator/) directory, automates the complete lifecycle management of AI agents in Kubernetes. It provides a simple, focused approach to deploying agents from container images or building them from source code.
+
+For detailed information about the Kagenti Operator, including installation, API reference, and examples, please refer to the [README.md](kagenti-operator/README.md) in the `kagenti-operator` directory.
+
+## Platform Operator (Deprecated)
+
+> **⚠️ DEPRECATED**: The Platform operator has been deprecated in favor of the simpler Kagenti Operator.
+
+The Platform operator, located in [platform-operator/](platform-operator/) directory, provided complex multi-component orchestration through Platform and Component CRs. This approach proved to be over-engineered for most use cases.
+
+**Migration**: Use the [Kagenti Operator](kagenti-operator/README.md) with individual `Agent` CRs instead of `Platform` and `Component` CRs. This provides better alignment with Kubernetes best practices while maintaining all essential functionality.
+
+For historical reference, see [platform-operator/README.md](platform-operator/README.md).
