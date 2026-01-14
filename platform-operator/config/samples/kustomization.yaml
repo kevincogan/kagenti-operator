@@ -1,5 +1,0 @@
-## Append samples of your project ##
-resources:
-- kagenti.operator.dev_v1alpha1_component.yaml
-- kagenti.operator.dev_v1alpha1_platform.yaml
-# +kubebuilder:scaffold:manifestskustomizesamples

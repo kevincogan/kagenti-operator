@@ -7,7 +7,6 @@ repos:
       - id: check-added-large-files
         args: ['--maxkb=1024']
         exclude: ^kagenti-operator/bin/
-        exclude: ^(kagenti-operator|platform-operator)/bin/
       - id: check-yaml
         # Exclude Helm templates as they contain Go template syntax
         exclude: ^charts/.*/templates/.*\.yaml$
@@ -43,32 +42,10 @@ repos:
         files: ^kagenti-operator/(go\.mod|go\.sum)$
         pass_filenames: false
 
-      # Platform Operator hooks
-      - id: go-fmt-platform
-        name: go-fmt (platform-operator)
-        entry: bash -c 'cd platform-operator && go fmt ./...'
-        language: system
-        files: ^platform-operator/.*\.go$
-        pass_filenames: false
-
-      - id: go-vet-platform
-        name: go-vet (platform-operator)
-        entry: bash -c 'cd platform-operator && go vet ./...'
-        language: system
-        files: ^platform-operator/.*\.go$
-        pass_filenames: false
-
-      - id: go-mod-tidy-platform
-        name: go-mod-tidy (platform-operator)
-        entry: bash -c 'cd platform-operator && go mod tidy'
-        language: system
-        files: ^platform-operator/(go\.mod|go\.sum)$
-        pass_filenames: false
-
       # Kubernetes YAML validation
       - id: k8s-yaml-validate
         name: validate k8s yamls
-        entry: bash -c 'find kagenti-operator/config platform-operator/config -name "*.yaml" -not -path "*/samples/*" -exec kubectl --dry-run=client apply -f {} \;'
+        entry: bash -c 'find kagenti-operator/config -name "*.yaml" -not -path "*/samples/*" -exec kubectl --dry-run=client apply -f {} \;'
         language: system
-        files: ^(kagenti|platform)-operator/config/.*\.yaml$
+        files: ^kagenti-operator/config/.*\.yaml$
         pass_filenames: false
