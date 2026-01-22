@@ -27,6 +27,7 @@ import (
 	rbac "github.com/kagenti/operator/internal/rbac"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -132,39 +133,138 @@ func (r *AgentReconciler) reconcileAgentDeployment(ctx context.Context, agent *a
 	if err != nil && errors.IsNotFound(err) {
 		deployment, err = r.createDeploymentForAgent(ctx, agent)
 		if err != nil {
-			logger.Error(err, "Unable to create deployment spec for Agent")
+			logger.Error(err, "Unable to create deployment spec for Agent",
+				"agent", agent.Name,
+				"namespace", agent.Namespace)
 			return ctrl.Result{}, err
 		}
 		logger.Info("Creating Agent Deployment", "deploymentName", deploymentName)
 		if agent.Annotations != nil {
 			deployment.ObjectMeta.Annotations = agent.Annotations
 		}
-		data, err := json.MarshalIndent(deployment, "", "  ")
-		if err != nil {
-			logger.Error(err, "Unable to marshal deployment spec to JSON")
-			return ctrl.Result{}, err
+
+		if logger.V(1).Enabled() {
+			data, err := json.MarshalIndent(deployment, "", "  ")
+			if err != nil {
+				logger.V(1).Error(err, "Unable to marshal deployment spec to JSON")
+			} else {
+				logger.V(1).Info("Deployment spec", "spec", string(data))
+			}
 		}
-		logger.Info("Deployment spec: " + string(data))
 
 		if err := controllerutil.SetControllerReference(agent, deployment, r.Scheme); err != nil {
-			logger.Error(err, "Unable to set controller reference for Agent Deployment")
+			logger.Error(err, "Unable to set controller reference for Agent Deployment",
+				"agent", agent.Name,
+				"namespace", agent.Namespace)
 			return ctrl.Result{}, err
 		}
 
 		if err := r.Create(ctx, deployment); err != nil {
-			logger.Error(err, "Unable to create Agent Deployment")
-			return ctrl.Result{}, err
+			logger.Error(err, "Unable to create Agent Deployment",
+				"agent", agent.Name,
+				"namespace", agent.Namespace)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 		}
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	} else if err != nil {
-		logger.Error(err, "Failed to get Agent Deployment")
+		logger.Error(err, "Failed to get Agent Deployment",
+			"agent", agent.Name,
+			"namespace", agent.Namespace)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+	}
+
+	// Update deployment if spec has changed
+	desiredDeployment, err := r.createDeploymentForAgent(ctx, agent)
+	if err != nil {
+		logger.Error(err, "Unable to create desired deployment spec for Agent",
+			"agent", agent.Name,
+			"namespace", agent.Namespace)
 		return ctrl.Result{}, err
+	}
+
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Fetch the latest version of the deployment before each retry
+		if err := r.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: agent.Namespace}, deployment); err != nil {
+			return err
+		}
+
+		logger.Info("Updating Agent Deployment", "deploymentName", deploymentName)
+
+		desiredReplicas := desiredDeployment.Spec.Replicas
+		currentReplicas := deployment.Spec.Replicas
+		if !ptr.Equal(currentReplicas, desiredReplicas) {
+			logger.Info("Replicas changed",
+				"old", ptrValueOrDefault(currentReplicas, 1),
+				"new", ptrValueOrDefault(desiredReplicas, 1))
+			deployment.Spec.Replicas = desiredReplicas
+		}
+
+		// Build a map of existing named containers and a slice of indices for unnamed ones.
+		existingByName := map[string]int{}
+		var unnamedExisting []int
+		for i := range deployment.Spec.Template.Spec.Containers {
+			c := deployment.Spec.Template.Spec.Containers[i]
+			if c.Name == "" {
+				unnamedExisting = append(unnamedExisting, i)
+				logger.Info("Warning: found unnamed container at index, matching by position is fragile",
+					"index", i,
+					"deployment", deploymentName)
+			} else {
+				existingByName[c.Name] = i
+			}
+		}
+
+		// Apply desired changes by container name; append missing containers.
+		// Use a separate index for unnamed desired containers to match them deterministically.
+		unnamedIdx := 0
+		for i := range desiredDeployment.Spec.Template.Spec.Containers {
+			desired := desiredDeployment.Spec.Template.Spec.Containers[i]
+
+			if desired.Name != "" {
+				if idx, found := existingByName[desired.Name]; found {
+					updated := updateContainerEnv(&deployment.Spec.Template.Spec.Containers[idx], &desired)
+					if updated {
+						logger.Info("Container updated", "containerName", desired.Name)
+					}
+					continue
+				}
+				// not found: append desired container to existing list
+				deployment.Spec.Template.Spec.Containers = append(deployment.Spec.Template.Spec.Containers, desired)
+				logger.Info("Container added", "containerName", desired.Name)
+				continue
+			}
+
+			// Fallback for unnamed desired containers: match to next unnamed existing container by recorded index
+			if unnamedIdx < len(unnamedExisting) {
+				idx := unnamedExisting[unnamedIdx]
+				updateContainerEnv(&deployment.Spec.Template.Spec.Containers[idx], &desired)
+				unnamedIdx++
+			} else {
+				// no unnamed existing left: append desired (unnamed) container
+				deployment.Spec.Template.Spec.Containers = append(deployment.Spec.Template.Spec.Containers, desired)
+			}
+		}
+		deployment.ObjectMeta.Annotations = mergeStringMaps(deployment.ObjectMeta.Annotations, agent.Annotations)
+		deployment.ObjectMeta.Labels = mergeStringMaps(deployment.ObjectMeta.Labels, agent.Labels)
+		return r.Update(ctx, deployment)
+	}); err != nil {
+		logger.Error(err, "Failed to update Agent Deployment after retries",
+			"agent", agent.Name,
+			"namespace", agent.Namespace)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+	}
+
+	if err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: agent.Namespace}, deployment); err != nil {
+		logger.Error(err, "Failed to get updated deployment status",
+			"deployment", deploymentName,
+			"namespace", agent.Namespace)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 	}
 
 	logger.Info("Deployment status",
 		"name", deploymentName,
 		"namespace", agent.Namespace,
-		"desiredReplicas", deployment.Spec.Replicas,
+		"desiredReplicas", ptrValueOrDefault(deployment.Spec.Replicas, 1),
 		"statusReplicas", deployment.Status.Replicas,
 		"readyReplicas", deployment.Status.ReadyReplicas,
 		"availableReplicas", deployment.Status.AvailableReplicas,
@@ -172,11 +272,9 @@ func (r *AgentReconciler) reconcileAgentDeployment(ctx context.Context, agent *a
 		"unavailableReplicas", deployment.Status.UnavailableReplicas,
 		"conditions", deployment.Status.Conditions)
 
-	if agent.Status.DeploymentStatus == nil {
-		agent.Status.DeploymentStatus = &agentv1alpha1.DeploymentStatus{}
-	}
+	desiredReplicas := ptrValueOrDefault(deployment.Spec.Replicas, 1)
 
-	agent.Status.DeploymentStatus.DeploymentMessage = fmt.Sprintf(
+	deploymentMessage := fmt.Sprintf(
 		"Replicas: %d/%d ready, %d updated, %d available",
 		deployment.Status.ReadyReplicas,
 		deployment.Status.Replicas,
@@ -184,17 +282,21 @@ func (r *AgentReconciler) reconcileAgentDeployment(ctx context.Context, agent *a
 		deployment.Status.AvailableReplicas,
 	)
 
-	meta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
+	var phase agentv1alpha1.LifecyclePhase
+	var conditions []metav1.Condition
+
+	// DeploymentAvailable condition
+	conditions = append(conditions, metav1.Condition{
 		Type:               "DeploymentAvailable",
 		Status:             metav1.ConditionTrue,
 		LastTransitionTime: metav1.Now(),
 		Reason:             "DeploymentExists",
-		Message:            fmt.Sprintf("Deployment %s exists with %d desired replicas", deployment.Name, *deployment.Spec.Replicas),
+		Message:            fmt.Sprintf("Deployment %s exists with %d desired replicas", deployment.Name, desiredReplicas),
 	})
 
 	// Track pod scheduling and availability
 	if deployment.Status.UnavailableReplicas > 0 {
-		meta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
+		conditions = append(conditions, metav1.Condition{
 			Type:               "PodsScheduled",
 			Status:             metav1.ConditionFalse,
 			LastTransitionTime: metav1.Now(),
@@ -202,7 +304,7 @@ func (r *AgentReconciler) reconcileAgentDeployment(ctx context.Context, agent *a
 			Message:            fmt.Sprintf("%d of %d pods are unavailable", deployment.Status.UnavailableReplicas, deployment.Status.Replicas),
 		})
 	} else if deployment.Status.Replicas > 0 {
-		meta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
+		conditions = append(conditions, metav1.Condition{
 			Type:               "PodsScheduled",
 			Status:             metav1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
@@ -212,31 +314,29 @@ func (r *AgentReconciler) reconcileAgentDeployment(ctx context.Context, agent *a
 	}
 
 	// Update Ready condition and Phase based on deployment readiness
-	if deployment.Status.ReadyReplicas > 0 && deployment.Status.ReadyReplicas == *deployment.Spec.Replicas {
-		agent.Status.DeploymentStatus.Phase = agentv1alpha1.PhaseReady
+	if deployment.Status.ReadyReplicas > 0 && deployment.Status.ReadyReplicas == int32(desiredReplicas) {
+		phase = agentv1alpha1.PhaseReady
 
-		meta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
+		conditions = append(conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Reason:             "DeploymentReady",
-			Message:            fmt.Sprintf("All %d/%d replicas are ready", deployment.Status.ReadyReplicas, *deployment.Spec.Replicas),
+			Message:            fmt.Sprintf("All %d/%d replicas are ready", deployment.Status.ReadyReplicas, desiredReplicas),
 		})
 	} else {
-		agent.Status.DeploymentStatus.Phase = agentv1alpha1.PhaseDeploying
+		phase = agentv1alpha1.PhaseDeploying
 
-		meta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
+		conditions = append(conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
 			LastTransitionTime: metav1.Now(),
 			Reason:             "DeploymentNotReady",
-			Message:            fmt.Sprintf("Waiting for replicas: %d/%d ready, %d available", deployment.Status.ReadyReplicas, *deployment.Spec.Replicas, deployment.Status.AvailableReplicas),
+			Message:            fmt.Sprintf("Waiting for replicas: %d/%d ready, %d available", deployment.Status.ReadyReplicas, desiredReplicas, deployment.Status.AvailableReplicas),
 		})
 	}
 
-	// retry on conflict to avoid error: "the object has been modified; please apply your changes to the latest version"
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-
 		latestAgent := &agentv1alpha1.Agent{}
 		if err := r.Get(ctx, types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace}, latestAgent); err != nil {
 			return err
@@ -246,29 +346,65 @@ func (r *AgentReconciler) reconcileAgentDeployment(ctx context.Context, agent *a
 			latestAgent.Status.DeploymentStatus = &agentv1alpha1.DeploymentStatus{}
 		}
 
-		latestAgent.Status.DeploymentStatus.DeploymentMessage = agent.Status.DeploymentStatus.DeploymentMessage
-		latestAgent.Status.DeploymentStatus.Phase = agent.Status.DeploymentStatus.Phase
+		latestAgent.Status.DeploymentStatus.DeploymentMessage = deploymentMessage
+		latestAgent.Status.DeploymentStatus.Phase = phase
 
-		for _, condition := range agent.Status.Conditions {
+		for _, condition := range conditions {
 			meta.SetStatusCondition(&latestAgent.Status.Conditions, condition)
 		}
 
 		return r.Status().Update(ctx, latestAgent)
 	}); err != nil {
-		logger.Error(err, "Failed to update Agent status after retries")
-		return ctrl.Result{}, err
+		logger.Error(err, "Failed to update Agent status after retries",
+			"agent", agent.Name,
+			"namespace", agent.Namespace)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 	}
 
 	// Continue reconciling if not all replicas are ready
-	if deployment.Status.ReadyReplicas < *deployment.Spec.Replicas {
+	if deployment.Status.ReadyReplicas < int32(desiredReplicas) {
 		logger.Info("Requeuing: not all replicas ready",
 			"ready", deployment.Status.ReadyReplicas,
-			"desired", *deployment.Spec.Replicas)
+			"desired", desiredReplicas)
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	logger.Info("Deployment is ready", "replicas", deployment.Status.ReadyReplicas)
 	return ctrl.Result{}, nil
+}
+
+func ptrValueOrDefault[T any](ptr *T, defaultVal T) T {
+	if ptr == nil {
+		return defaultVal
+	}
+	return *ptr
+}
+
+// Returns true if any field was updated
+func updateContainerEnv(existing, desired *corev1.Container) bool {
+	updated := false
+
+	// Update Env
+	if !equality.Semantic.DeepEqual(existing.Env, desired.Env) {
+		existing.Env = desired.Env
+		updated = true
+	}
+	return updated
+}
+
+// mergeStringMaps overlays src onto dst, returning a map suitable for assigning back.
+// If both are nil, returns nil.
+func mergeStringMaps(dst, src map[string]string) map[string]string {
+	if dst == nil && src == nil {
+		return nil
+	}
+	if dst == nil {
+		dst = map[string]string{}
+	}
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 func (r *AgentReconciler) fetchImageFromAgentBuild(ctx context.Context, agent *agentv1alpha1.Agent, agentBuildRef string) (string, error) {
