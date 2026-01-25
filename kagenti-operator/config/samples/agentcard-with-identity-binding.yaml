@@ -1,0 +1,55 @@
+# Example AgentCard with Identity Binding Configuration
+# This demonstrates the Step 1 identity binding feature from the RFC
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentCard
+metadata:
+  name: weather-agent-card
+  namespace: default
+spec:
+  # How often to re-fetch the agent card
+  syncPeriod: "30s"
+  
+  # Selector to match the Agent resource
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weather-agent
+      kagenti.io/type: agent
+
+  # Identity Binding Configuration (Step 1)
+  identityBinding:
+    # Trust domain for SPIFFE ID derivation
+    # If not specified, uses controller's default (typically "cluster.local")
+    trustDomain: "cluster.local"
+    
+    # Allowlist of SPIFFE IDs that can bind to this agent
+    # Format: spiffe://<trust-domain>/ns/<namespace>/sa/<service-account>
+    allowedSpiffeIDs:
+      - "spiffe://cluster.local/ns/default/sa/weather-agent-sa"
+    
+    # Strict mode enforcement
+    # When true and binding fails, the Agent controller will scale the deployment to 0
+    # When false, binding failures are logged but deployment continues running
+    strict: false
+
+---
+# Example with strict mode enabled
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentCard
+metadata:
+  name: secure-agent-card
+  namespace: production
+spec:
+  syncPeriod: "1m"
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: secure-agent
+      kagenti.io/type: agent
+
+  identityBinding:
+    trustDomain: "prod.example.com"
+    allowedSpiffeIDs:
+      - "spiffe://prod.example.com/ns/production/sa/secure-agent-sa"
+      - "spiffe://prod.example.com/ns/production/sa/backup-agent-sa"
+    # Strict mode: if binding fails, the agent will be disabled (scaled to 0)
+    strict: true
+

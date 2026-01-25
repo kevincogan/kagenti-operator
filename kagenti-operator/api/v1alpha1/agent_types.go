@@ -79,6 +79,24 @@ type AgentStatus struct {
 	// DeploymentStatus represents the status of the agent deployment
 	// +optional
 	DeploymentStatus *DeploymentStatus `json:"deploymentStatus,omitempty"`
+	// BindingEnforcement tracks identity binding enforcement state
+	// +optional
+	BindingEnforcement *BindingEnforcementStatus `json:"bindingEnforcement,omitempty"`
+}
+
+// BindingEnforcementStatus tracks the state of identity binding enforcement
+type BindingEnforcementStatus struct {
+	// DisabledByBinding indicates the agent was disabled due to failed identity binding
+	DisabledByBinding bool `json:"disabledByBinding,omitempty"`
+	// OriginalReplicas stores the replica count before binding enforcement disabled the agent
+	// +optional
+	OriginalReplicas *int32 `json:"originalReplicas,omitempty"`
+	// DisabledAt is when the agent was disabled due to binding enforcement
+	// +optional
+	DisabledAt *metav1.Time `json:"disabledAt,omitempty"`
+	// DisabledReason provides details about why binding enforcement disabled the agent
+	// +optional
+	DisabledReason string `json:"disabledReason,omitempty"`
 }
 type LifecyclePhase string
 

@@ -18,6 +18,10 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -26,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -50,6 +55,24 @@ const (
 
 	// Default sync period
 	DefaultSyncPeriod = 30 * time.Second
+
+	// Default trust domain for SPIFFE IDs
+	DefaultTrustDomain = "cluster.local"
+
+	// Annotation keys for binding enforcement
+	AnnotationDisabledBy     = "kagenti.io/disabled-by"
+	AnnotationDisabledReason = "kagenti.io/disabled-reason"
+
+	// Annotation values
+	DisabledByIdentityBinding = "identity-binding"
+
+	// Binding status reasons
+	ReasonBound                 = "Bound"
+	ReasonNotBound              = "NotBound"
+	ReasonAgentNotFound         = "AgentNotFound"
+	ReasonMultipleAgentsMatched = "MultipleAgentsMatched"
+	ReasonNoTrustDomain         = "NoTrustDomain"
+	ReasonNoIdentityConfig      = "NoIdentityConfig"
 )
 
 var (
@@ -61,6 +84,8 @@ type AgentCardReconciler struct {
 	client.Client
 	Scheme       *runtime.Scheme
 	AgentFetcher agentcard.Fetcher
+	Recorder     record.EventRecorder
+	TrustDomain  string
 }
 
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agentcards,verbs=get;list;watch;create;update;patch;delete
@@ -97,8 +122,37 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	agent, err := r.findMatchingAgent(ctx, agentCard)
 	if err != nil {
 		agentCardLogger.Error(err, "Failed to find matching Agent", "agentCard", agentCard.Name)
-		r.updateCondition(ctx, agentCard, "Synced", metav1.ConditionFalse, "AgentNotFound", err.Error())
+
+		// Determine the appropriate reason based on error type
+		var reason, message, conditionReason string
+		if errors.Is(err, ErrMultipleAgentsMatched) {
+			reason = ReasonMultipleAgentsMatched
+			message = fmt.Sprintf("Cannot evaluate binding: %s", err.Error())
+			conditionReason = "MultipleAgentsMatched"
+		} else {
+			reason = ReasonAgentNotFound
+			message = "No matching Agent found"
+			conditionReason = "AgentNotFound"
+		}
+
+		r.updateCondition(ctx, agentCard, "Synced", metav1.ConditionFalse, conditionReason, err.Error())
+
+		// If identity binding is configured, update binding status
+		if agentCard.Spec.IdentityBinding != nil {
+			r.updateBindingStatus(ctx, agentCard, false, reason, message, "")
+			// Emit event for visibility
+			if r.Recorder != nil {
+				r.Recorder.Event(agentCard, corev1.EventTypeWarning, reason, message)
+			}
+		}
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
+	}
+
+	// Evaluate identity binding BEFORE fetching the card (uses only K8s metadata)
+	if agentCard.Spec.IdentityBinding != nil {
+		if err := r.evaluateBinding(ctx, agentCard, agent); err != nil {
+			agentCardLogger.Error(err, "Failed to evaluate binding", "agentCard", agentCard.Name)
+		}
 	}
 
 	// Check if Agent is ready before attempting to fetch
@@ -140,8 +194,19 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// (agents may advertise 0.0.0.0:8000 which isn't useful for cluster communication)
 	cardData.URL = serviceURL
 
+	// Compute card_id for drift detection (optional)
+	cardId := r.computeCardId(cardData)
+	if cardId != "" && agentCard.Status.CardId != "" && agentCard.Status.CardId != cardId {
+		// Card content has changed - emit event
+		if r.Recorder != nil {
+			r.Recorder.Event(agentCard, corev1.EventTypeWarning, "CardContentChanged",
+				fmt.Sprintf("Agent card content changed: previous=%s, current=%s", agentCard.Status.CardId, cardId))
+		}
+		agentCardLogger.Info("Card content changed", "agentCard", agentCard.Name, "previousCardId", agentCard.Status.CardId, "newCardId", cardId)
+	}
+
 	// Update the AgentCard status with the fetched card
-	if err := r.updateAgentCardStatus(ctx, agentCard, cardData, protocol); err != nil {
+	if err := r.updateAgentCardStatus(ctx, agentCard, cardData, protocol, cardId); err != nil {
 		agentCardLogger.Error(err, "Failed to update AgentCard status")
 		return ctrl.Result{}, err
 	}
@@ -153,7 +218,11 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{RequeueAfter: syncPeriod}, nil
 }
 
-// findMatchingAgent finds the Agent that matches the AgentCard selector
+// ErrMultipleAgentsMatched is returned when multiple agents match the selector
+var ErrMultipleAgentsMatched = fmt.Errorf("multiple agents match selector")
+
+// findMatchingAgent finds the Agent that matches the AgentCard selector.
+// Returns an error if zero or multiple agents match - binding requires a unique selector.
 func (r *AgentCardReconciler) findMatchingAgent(ctx context.Context, agentCard *agentv1alpha1.AgentCard) (*agentv1alpha1.Agent, error) {
 	agentList := &agentv1alpha1.AgentList{}
 	listOpts := []client.ListOption{
@@ -170,9 +239,16 @@ func (r *AgentCardReconciler) findMatchingAgent(ctx context.Context, agentCard *
 	}
 
 	if len(agentList.Items) > 1 {
-		agentCardLogger.Info("Multiple agents match selector, using first one",
+		agentNames := make([]string, len(agentList.Items))
+		for i, agent := range agentList.Items {
+			agentNames[i] = agent.Name
+		}
+		agentCardLogger.Error(ErrMultipleAgentsMatched, "Ambiguous selector - binding requires unique selector",
 			"count", len(agentList.Items),
-			"agentCard", agentCard.Name)
+			"agentCard", agentCard.Name,
+			"matchingAgents", agentNames)
+		return nil, fmt.Errorf("%w: found %d agents (%v) - use more specific labels in selector",
+			ErrMultipleAgentsMatched, len(agentList.Items), agentNames)
 	}
 
 	return &agentList.Items[0], nil
@@ -237,7 +313,7 @@ func (r *AgentCardReconciler) getSyncPeriod(agentCard *agentv1alpha1.AgentCard) 
 }
 
 // updateAgentCardStatus updates the AgentCard status with the fetched agent card
-func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCard *agentv1alpha1.AgentCard, cardData *agentv1alpha1.AgentCardData, protocol string) error {
+func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCard *agentv1alpha1.AgentCard, cardData *agentv1alpha1.AgentCardData, protocol, cardId string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Fetch the latest version
 		latest := &agentv1alpha1.AgentCard{}
@@ -252,6 +328,9 @@ func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCa
 		latest.Status.Card = cardData
 		latest.Status.Protocol = protocol
 		latest.Status.LastSyncTime = &metav1.Time{Time: time.Now()}
+		if cardId != "" {
+			latest.Status.CardId = cardId
+		}
 
 		// Update conditions
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
@@ -375,6 +454,126 @@ func (r *AgentCardReconciler) selectorMatchesAgent(agentCard *agentv1alpha1.Agen
 	}
 
 	return true
+}
+
+// evaluateBinding evaluates identity binding using Kubernetes metadata only
+func (r *AgentCardReconciler) evaluateBinding(ctx context.Context, agentCard *agentv1alpha1.AgentCard, agent *agentv1alpha1.Agent) error {
+	binding := agentCard.Spec.IdentityBinding
+	if binding == nil {
+		return nil
+	}
+
+	// Determine trust domain
+	trustDomain := binding.TrustDomain
+	if trustDomain == "" {
+		trustDomain = r.TrustDomain
+	}
+	if trustDomain == "" {
+		trustDomain = DefaultTrustDomain
+	}
+
+	// Derive expected SPIFFE ID from Kubernetes metadata
+	// Convention: spiffe://<trust-domain>/ns/<namespace>/sa/<serviceAccount>
+	serviceAccount := r.getAgentServiceAccount(agent)
+	expectedSpiffeID := fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", trustDomain, agent.Namespace, serviceAccount)
+
+	// Check if expected SPIFFE ID is in the allowlist
+	bound := false
+	for _, allowedID := range binding.AllowedSpiffeIDs {
+		if string(allowedID) == expectedSpiffeID {
+			bound = true
+			break
+		}
+	}
+
+	// Determine reason and message
+	var reason, message string
+	if bound {
+		reason = ReasonBound
+		message = fmt.Sprintf("Expected SPIFFE ID %s is in the allowlist", expectedSpiffeID)
+	} else {
+		reason = ReasonNotBound
+		message = fmt.Sprintf("Expected SPIFFE ID %s is not in the allowlist", expectedSpiffeID)
+	}
+
+	// Update binding status
+	if err := r.updateBindingStatus(ctx, agentCard, bound, reason, message, expectedSpiffeID); err != nil {
+		return err
+	}
+
+	// Emit events
+	if r.Recorder != nil {
+		if bound {
+			r.Recorder.Event(agentCard, corev1.EventTypeNormal, "BindingEvaluated", message)
+		} else {
+			r.Recorder.Event(agentCard, corev1.EventTypeWarning, "BindingFailed", message)
+		}
+	}
+
+	return nil
+}
+
+// getAgentServiceAccount returns the service account name for an Agent
+func (r *AgentCardReconciler) getAgentServiceAccount(agent *agentv1alpha1.Agent) string {
+	if agent.Spec.PodTemplateSpec != nil && agent.Spec.PodTemplateSpec.Spec.ServiceAccountName != "" {
+		return agent.Spec.PodTemplateSpec.Spec.ServiceAccountName
+	}
+	// Default service account follows the pattern: <agent-name>-sa
+	return agent.Name + "-sa"
+}
+
+// updateBindingStatus updates the binding status in the AgentCard
+func (r *AgentCardReconciler) updateBindingStatus(ctx context.Context, agentCard *agentv1alpha1.AgentCard, bound bool, reason, message, expectedSpiffeID string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &agentv1alpha1.AgentCard{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      agentCard.Name,
+			Namespace: agentCard.Namespace,
+		}, latest); err != nil {
+			return err
+		}
+
+		now := metav1.Now()
+		latest.Status.BindingStatus = &agentv1alpha1.BindingStatus{
+			Bound:              bound,
+			Reason:             reason,
+			Message:            message,
+			LastEvaluationTime: &now,
+		}
+		if expectedSpiffeID != "" {
+			latest.Status.ExpectedSpiffeID = expectedSpiffeID
+		}
+
+		// Update the Bound condition
+		conditionStatus := metav1.ConditionFalse
+		if bound {
+			conditionStatus = metav1.ConditionTrue
+		}
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               "Bound",
+			Status:             conditionStatus,
+			LastTransitionTime: now,
+			Reason:             reason,
+			Message:            message,
+		})
+
+		return r.Status().Update(ctx, latest)
+	})
+}
+
+// computeCardId computes a SHA256 hash of the card data for drift detection
+func (r *AgentCardReconciler) computeCardId(cardData *agentv1alpha1.AgentCardData) string {
+	if cardData == nil {
+		return ""
+	}
+	// Use JSON serialization for simplicity (JCS would be ideal but adds complexity)
+	data, err := json.Marshal(cardData)
+	if err != nil {
+		agentCardLogger.Error(err, "Failed to marshal card data for hash computation")
+		return ""
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
 }
 
 // SetupWithManager sets up the controller with the Manager.
