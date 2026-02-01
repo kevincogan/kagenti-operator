@@ -8,7 +8,7 @@
 
 This document outlines the migration of the AgentCard controller from watching and reconciling based on the custom `Agent` CRD to watching standard Kubernetes workloads (Deployments and StatefulSets) that are identified by specific labels.
 
-This migration aligns with the Kagenti UI migration documented in [kagenti/docs/plans/migrate-agent-crd-to-workloads.md](../../../kagenti/docs/plans/migrate-agent-crd-to-workloads.md), where agents are now deployed directly as Deployments/StatefulSets rather than through the Agent CRD.
+This migration aligns with the Kagenti UI migration documented in [kagenti/docs/plans/migrate-agent-crd-to-workloads.md](https://github.com/kagenti/kagenti/blob/main/docs/plans/migrate-agent-crd-to-workloads.md), where agents are now deployed directly as Deployments/StatefulSets rather than through the Agent CRD.
 
 **Goals:**
 - Support agents deployed as Deployments and StatefulSets
@@ -1373,7 +1373,7 @@ To revert to the previous version:
 
 ## References
 
-- [Kagenti UI Migration Plan](../../../kagenti/docs/plans/migrate-agent-crd-to-workloads.md)
+- [Kagenti UI Migration Plan](https://github.com/kagenti/kagenti/blob/main/docs/plans/migrate-agent-crd-to-workloads.md)
 - [Kubernetes Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
 - [Kubernetes StatefulSets](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/)
 - [Controller Runtime Watches](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/builder)
