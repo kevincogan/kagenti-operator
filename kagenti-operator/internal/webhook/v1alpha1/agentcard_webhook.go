@@ -87,18 +87,8 @@ func (v *AgentCardValidator) validateAgentCard(agentcard *agentv1alpha1.AgentCar
 		return nil, fmt.Errorf("either spec.targetRef or spec.selector must be specified")
 	}
 
-	// Validate targetRef if specified
-	if agentcard.Spec.TargetRef != nil {
-		if agentcard.Spec.TargetRef.APIVersion == "" {
-			return nil, fmt.Errorf("spec.targetRef.apiVersion is required")
-		}
-		if agentcard.Spec.TargetRef.Kind == "" {
-			return nil, fmt.Errorf("spec.targetRef.kind is required")
-		}
-		if agentcard.Spec.TargetRef.Name == "" {
-			return nil, fmt.Errorf("spec.targetRef.name is required")
-		}
-	}
+	// Field-level validation for targetRef (e.g., non-empty APIVersion/Kind/Name)
+	// is enforced by the CRD schema (minLength constraints), so it is not repeated here.
 
 	// Validate selector if specified
 	if agentcard.Spec.Selector != nil {
