@@ -401,7 +401,7 @@ func isStatefulSetReadyFromUnstructured(obj *unstructured.Unstructured) bool {
 	if err != nil {
 		return false
 	}
-	return readyReplicas > 0 && readyReplicas == replicas
+	return readyReplicas == replicas
 }
 
 // isAgentReadyFromUnstructured checks Agent CRD readiness from unstructured
