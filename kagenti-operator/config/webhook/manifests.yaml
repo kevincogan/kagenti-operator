@@ -50,3 +50,23 @@ webhooks:
     resources:
     - agentbuilds
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-agent-kagenti-dev-v1alpha1-agentcard
+  failurePolicy: Fail
+  name: vagentcard.kb.io
+  rules:
+  - apiGroups:
+    - agent.kagenti.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - agentcards
+  sideEffects: None

@@ -27,12 +27,38 @@ type AgentCardSpec struct {
 	// +kubebuilder:default="30s"
 	SyncPeriod string `json:"syncPeriod,omitempty"`
 
-	// Selector identifies the Agent to index
-	// +required
-	Selector AgentSelector `json:"selector"`
+	// TargetRef identifies the workload backing this agent using duck typing.
+	// The referenced workload must have the required Kagenti labels (kagenti.io/type=agent).
+	// This is the preferred way to reference agent workloads.
+	// +optional
+	TargetRef *TargetRef `json:"targetRef,omitempty"`
+
+	// Selector identifies the Agent to index using label matching.
+	// Deprecated: Use TargetRef instead. Selector is kept for backward compatibility.
+	// If both TargetRef and Selector are specified, TargetRef takes precedence.
+	// +optional
+	Selector *AgentSelector `json:"selector,omitempty"`
 }
 
-// AgentSelector identifies which Agent resource to index
+// TargetRef identifies a workload that backs this agent using duck typing.
+// This allows referencing any workload type (Deployment, StatefulSet, Job, etc.)
+// without the controller needing explicit knowledge of each type.
+type TargetRef struct {
+	// APIVersion is the API version of the target resource (e.g., "apps/v1")
+	// +kubebuilder:validation:MinLength=1
+	APIVersion string `json:"apiVersion"`
+
+	// Kind is the kind of the target resource (e.g., "Deployment", "StatefulSet")
+	// +kubebuilder:validation:MinLength=1
+	Kind string `json:"kind"`
+
+	// Name is the name of the target resource
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
+// AgentSelector identifies which Agent resource to index using label matching.
+// Deprecated: Use TargetRef instead for explicit workload references.
 type AgentSelector struct {
 	// MatchLabels is a map of {key,value} pairs to match against Agent labels
 	// +required
@@ -56,6 +82,11 @@ type AgentCardStatus struct {
 	// Protocol is the detected agent protocol (e.g., "a2a")
 	// +optional
 	Protocol string `json:"protocol,omitempty"`
+
+	// TargetRef contains the resolved reference to the backing workload.
+	// This is populated after the controller successfully locates the workload.
+	// +optional
+	TargetRef *TargetRef `json:"targetRef,omitempty"`
 
 	// ValidSignature indicates if the agent card signature was validated (future use)
 	// +optional
@@ -163,6 +194,8 @@ type SkillParameter struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=agentcards;cards
 // +kubebuilder:printcolumn:name="Protocol",type="string",JSONPath=".status.protocol",description="Agent Protocol"
+// +kubebuilder:printcolumn:name="Kind",type="string",JSONPath=".status.targetRef.kind",description="Workload Kind"
+// +kubebuilder:printcolumn:name="Target",type="string",JSONPath=".status.targetRef.name",description="Target Workload"
 // +kubebuilder:printcolumn:name="Agent",type="string",JSONPath=".status.card.name",description="Agent Name"
 // +kubebuilder:printcolumn:name="Synced",type="string",JSONPath=".status.conditions[?(@.type=='Synced')].status",description="Sync Status"
 // +kubebuilder:printcolumn:name="LastSync",type="date",JSONPath=".status.lastSyncTime",description="Last Sync Time"

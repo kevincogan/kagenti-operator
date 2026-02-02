@@ -130,7 +130,7 @@ var _ = Describe("AgentCard Controller", func() {
 				},
 				Spec: agentv1alpha1.AgentCardSpec{
 					SyncPeriod: "30s",
-					Selector: agentv1alpha1.AgentSelector{
+					Selector: &agentv1alpha1.AgentSelector{
 						MatchLabels: map[string]string{
 							"app.kubernetes.io/name": agentName,
 							LabelAgentType:           LabelValueAgent,

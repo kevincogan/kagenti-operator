@@ -260,6 +260,10 @@ func main() {
 		setupLog.Error(err, "unable to create webhook", "webhook", "AgentBuild")
 		os.Exit(1)
 	}
+	if err = webhookv1alpha1.SetupAgentCardWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "AgentCard")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {

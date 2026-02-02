@@ -155,6 +155,11 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 // findMatchingAgent finds the Agent that matches the AgentCard selector
 func (r *AgentCardReconciler) findMatchingAgent(ctx context.Context, agentCard *agentv1alpha1.AgentCard) (*agentv1alpha1.Agent, error) {
+	// Check if selector is specified (required when targetRef is not used)
+	if agentCard.Spec.Selector == nil {
+		return nil, fmt.Errorf("no selector specified in AgentCard")
+	}
+
 	agentList := &agentv1alpha1.AgentList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(agentCard.Namespace),
@@ -364,7 +369,7 @@ func (r *AgentCardReconciler) mapAgentToAgentCard(ctx context.Context, obj clien
 
 // selectorMatchesAgent checks if an AgentCard selector matches an Agent
 func (r *AgentCardReconciler) selectorMatchesAgent(agentCard *agentv1alpha1.AgentCard, agent *agentv1alpha1.Agent) bool {
-	if agent.Labels == nil {
+	if agentCard.Spec.Selector == nil || agent.Labels == nil {
 		return false
 	}
 

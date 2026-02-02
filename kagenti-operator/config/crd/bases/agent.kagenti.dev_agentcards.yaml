@@ -22,6 +22,14 @@ spec:
       jsonPath: .status.protocol
       name: Protocol
       type: string
+    - description: Workload Kind
+      jsonPath: .status.targetRef.kind
+      name: Kind
+      type: string
+    - description: Target Workload
+      jsonPath: .status.targetRef.name
+      name: Target
+      type: string
     - description: Agent Name
       jsonPath: .status.card.name
       name: Agent
@@ -63,7 +71,10 @@ spec:
             description: AgentCardSpec defines the desired state of AgentCard.
             properties:
               selector:
-                description: Selector identifies the Agent to index
+                description: |-
+                  Selector identifies the Agent to index using label matching.
+                  Deprecated: Use TargetRef instead. Selector is kept for backward compatibility.
+                  If both TargetRef and Selector are specified, TargetRef takes precedence.
                 properties:
                   matchLabels:
                     additionalProperties:
@@ -79,8 +90,31 @@ spec:
                 description: SyncPeriod is how often to re-fetch the agent card (e.g.,
                   "30s", "5m")
                 type: string
-            required:
-            - selector
+              targetRef:
+                description: |-
+                  TargetRef identifies the workload backing this agent using duck typing.
+                  The referenced workload must have the required Kagenti labels (kagenti.io/type=agent).
+                  This is the preferred way to reference agent workloads.
+                properties:
+                  apiVersion:
+                    description: APIVersion is the API version of the target resource
+                      (e.g., "apps/v1")
+                    minLength: 1
+                    type: string
+                  kind:
+                    description: Kind is the kind of the target resource (e.g., "Deployment",
+                      "StatefulSet")
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the name of the target resource
+                    minLength: 1
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
             type: object
           status:
             description: AgentCardStatus defines the observed state of AgentCard.
@@ -250,6 +284,30 @@ spec:
               protocol:
                 description: Protocol is the detected agent protocol (e.g., "a2a")
                 type: string
+              targetRef:
+                description: |-
+                  TargetRef contains the resolved reference to the backing workload.
+                  This is populated after the controller successfully locates the workload.
+                properties:
+                  apiVersion:
+                    description: APIVersion is the API version of the target resource
+                      (e.g., "apps/v1")
+                    minLength: 1
+                    type: string
+                  kind:
+                    description: Kind is the kind of the target resource (e.g., "Deployment",
+                      "StatefulSet")
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the name of the target resource
+                    minLength: 1
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
               validSignature:
                 description: ValidSignature indicates if the agent card signature
                   was validated (future use)
