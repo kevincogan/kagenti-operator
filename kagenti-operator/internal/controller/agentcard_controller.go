@@ -46,9 +46,9 @@ import (
 
 const (
 	// Label keys
-	LabelAgentType     = "kagenti.io/type"
-	LabelAgentProtocol = "kagenti.io/agent-protocol" // Legacy label
-	LabelKagentiProtocol = "kagenti.io/protocol"      // New label
+	LabelAgentType       = "kagenti.io/type"
+	LabelAgentProtocol   = "kagenti.io/agent-protocol" // Legacy label
+	LabelKagentiProtocol = "kagenti.io/protocol"       // New label
 
 	// Label values
 	LabelValueAgent = "agent"
