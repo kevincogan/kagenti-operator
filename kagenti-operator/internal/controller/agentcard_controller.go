@@ -361,7 +361,7 @@ func isDeploymentReady(d *appsv1.Deployment) bool {
 
 // isStatefulSetReady checks if a StatefulSet is ready
 func isStatefulSetReady(s *appsv1.StatefulSet) bool {
-	return s.Status.ReadyReplicas > 0 && s.Status.ReadyReplicas == s.Status.Replicas
+	return s.Status.ReadyReplicas == s.Status.Replicas
 }
 
 // isAgentCRDReady checks if an Agent CRD is ready
