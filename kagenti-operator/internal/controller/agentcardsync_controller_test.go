@@ -36,7 +36,7 @@ var _ = Describe("AgentCardSync Controller", func() {
 	Context("When reconciling an Agent with agent labels", func() {
 		const (
 			agentName     = "test-sync-agent"
-			agentCardName = "test-sync-agent-card"
+			agentCardName = "test-sync-agent-agent-card"
 			namespace     = "default"
 		)
 
@@ -181,7 +181,7 @@ var _ = Describe("AgentCardSync Controller", func() {
 			By("verifying no AgentCard was created")
 			agentCard := &agentv1alpha1.AgentCard{}
 			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name:      agentNoProtocol + "-card",
+				Name:      agentNoProtocol + "-agent-card",
 				Namespace: namespace,
 			}, agentCard)
 			Expect(errors.IsNotFound(err)).To(BeTrue())
@@ -194,7 +194,7 @@ var _ = Describe("AgentCardSync Controller", func() {
 	Context("When reconciling a Deployment with agent labels", func() {
 		const (
 			deploymentName = "test-sync-deployment"
-			agentCardName  = "test-sync-deployment-card"
+			agentCardName  = "test-sync-deployment-deployment-card"
 			namespace      = "default"
 		)
 
@@ -353,7 +353,7 @@ var _ = Describe("AgentCardSync Controller", func() {
 			By("verifying no AgentCard was created")
 			agentCard := &agentv1alpha1.AgentCard{}
 			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name:      deploymentNoProtocol + "-card",
+				Name:      deploymentNoProtocol + "-deployment-card",
 				Namespace: namespace,
 			}, agentCard)
 			Expect(errors.IsNotFound(err)).To(BeTrue())
@@ -366,7 +366,7 @@ var _ = Describe("AgentCardSync Controller", func() {
 	Context("When reconciling a StatefulSet with agent labels", func() {
 		const (
 			statefulsetName = "test-sync-statefulset"
-			agentCardName   = "test-sync-statefulset-card"
+			agentCardName   = "test-sync-statefulset-statefulset-card"
 			namespace       = "default"
 		)
 
@@ -474,7 +474,7 @@ var _ = Describe("AgentCardSync Controller", func() {
 	Context("When migrating an AgentCard from selector to targetRef", func() {
 		const (
 			deploymentName = "test-migration-deployment"
-			agentCardName  = "test-migration-deployment-card"
+			agentCardName  = "test-migration-deployment-deployment-card"
 			namespace      = "default"
 		)
 

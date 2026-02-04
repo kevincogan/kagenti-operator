@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -172,19 +173,21 @@ func (r *AgentCardSyncReconciler) shouldSyncAgent(agent *agentv1alpha1.Agent) bo
 	return false
 }
 
-// getAgentCardName generates the AgentCard name from workload name
-func (r *AgentCardSyncReconciler) getAgentCardNameFromWorkload(workloadName string) string {
-	return workloadName + "-card"
+// getAgentCardNameFromWorkload generates the AgentCard name from workload name and kind
+// The kind is included to prevent collisions when a Deployment, StatefulSet, and/or
+// legacy Agent CRD share the same name in a namespace.
+func (r *AgentCardSyncReconciler) getAgentCardNameFromWorkload(workloadName string, kind string) string {
+	return fmt.Sprintf("%s-%s-card", workloadName, strings.ToLower(kind))
 }
 
 // getAgentCardName generates the AgentCard name for an Agent (backward compatibility)
 func (r *AgentCardSyncReconciler) getAgentCardName(agent *agentv1alpha1.Agent) string {
-	return r.getAgentCardNameFromWorkload(agent.Name)
+	return r.getAgentCardNameFromWorkload(agent.Name, "Agent")
 }
 
 // ensureAgentCard creates or updates an AgentCard for a workload using targetRef
 func (r *AgentCardSyncReconciler) ensureAgentCard(ctx context.Context, obj client.Object, gvk schema.GroupVersionKind) (ctrl.Result, error) {
-	cardName := r.getAgentCardNameFromWorkload(obj.GetName())
+	cardName := r.getAgentCardNameFromWorkload(obj.GetName(), gvk.Kind)
 
 	// Check if AgentCard already exists
 	existingCard := &agentv1alpha1.AgentCard{}
@@ -306,7 +309,7 @@ func (r *AgentCardSyncReconciler) hasOwnerReference(agentCard *agentv1alpha1.Age
 // cleanupOrphanedCards removes AgentCard resources for deleted Agents
 func (r *AgentCardSyncReconciler) cleanupOrphanedCards(ctx context.Context, agentName types.NamespacedName) (ctrl.Result, error) {
 	// Check if there's an AgentCard that should be cleaned up
-	agentCardName := fmt.Sprintf("%s-card", agentName.Name)
+	agentCardName := r.getAgentCardNameFromWorkload(agentName.Name, "Agent")
 	agentCard := &agentv1alpha1.AgentCard{}
 
 	err := r.Get(ctx, types.NamespacedName{
