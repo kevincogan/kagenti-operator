@@ -482,105 +482,104 @@ var _ = Describe("AgentCard Controller - findMatchingWorkloadBySelector", func()
 			}
 		})
 
-		It("should prefer Deployment over StatefulSet when both match", func() {
-			sharedLabel := "shared-app"
+	It("should return error when multiple workloads match (ambiguous selector)", func() {
+		sharedLabel := "shared-app"
 
-			By("creating a Deployment with agent labels")
-			deployment := &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      deploymentName,
-					Namespace: namespace,
-					Labels: map[string]string{
-						"app.kubernetes.io/name": sharedLabel,
-						LabelAgentType:           LabelValueAgent,
+		By("creating a Deployment with agent labels")
+		deployment := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name": sharedLabel,
+					LabelAgentType:           LabelValueAgent,
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app": deploymentName,
 					},
 				},
-				Spec: appsv1.DeploymentSpec{
-					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
 							"app": deploymentName,
 						},
 					},
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{
-								"app": deploymentName,
-							},
-						},
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									Name:  "agent",
-									Image: "test-image:latest",
-								},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  "agent",
+								Image: "test-image:latest",
 							},
 						},
 					},
 				},
-			}
-			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+			},
+		}
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
 
-			By("creating a StatefulSet with the same labels")
-			statefulSet := &appsv1.StatefulSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      statefulSetName,
-					Namespace: namespace,
-					Labels: map[string]string{
+		By("creating a StatefulSet with the same labels")
+		statefulSet := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      statefulSetName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name": sharedLabel,
+					LabelAgentType:           LabelValueAgent,
+				},
+			},
+			Spec: appsv1.StatefulSetSpec{
+				ServiceName: statefulSetName,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app": statefulSetName,
+					},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"app": statefulSetName,
+						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  "agent",
+								Image: "test-image:latest",
+							},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, statefulSet)).To(Succeed())
+
+		By("creating an AgentCard with matching selector")
+		agentCard := &agentv1alpha1.AgentCard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-card-order",
+				Namespace: namespace,
+			},
+			Spec: agentv1alpha1.AgentCardSpec{
+				Selector: &agentv1alpha1.AgentSelector{
+					MatchLabels: map[string]string{
 						"app.kubernetes.io/name": sharedLabel,
 						LabelAgentType:           LabelValueAgent,
 					},
 				},
-				Spec: appsv1.StatefulSetSpec{
-					ServiceName: statefulSetName,
-					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"app": statefulSetName,
-						},
-					},
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{
-								"app": statefulSetName,
-							},
-						},
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									Name:  "agent",
-									Image: "test-image:latest",
-								},
-							},
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, statefulSet)).To(Succeed())
+			},
+		}
 
-			By("creating an AgentCard with matching selector")
-			agentCard := &agentv1alpha1.AgentCard{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-card-order",
-					Namespace: namespace,
-				},
-				Spec: agentv1alpha1.AgentCardSpec{
-					Selector: &agentv1alpha1.AgentSelector{
-						MatchLabels: map[string]string{
-							"app.kubernetes.io/name": sharedLabel,
-							LabelAgentType:           LabelValueAgent,
-						},
-					},
-				},
-			}
+		By("calling findMatchingWorkloadBySelector")
+		workload, err := reconciler.findMatchingWorkloadBySelector(ctx, agentCard)
 
-			By("calling findMatchingWorkloadBySelector")
-			workload, err := reconciler.findMatchingWorkloadBySelector(ctx, agentCard)
-
-			By("verifying Deployment was found (not StatefulSet)")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(workload).NotTo(BeNil())
-			Expect(workload.Kind).To(Equal("Deployment"))
-			Expect(workload.Name).To(Equal(deploymentName))
-		})
+		By("verifying error is returned for ambiguous selector")
+		Expect(err).To(HaveOccurred())
+		Expect(errors.Is(err, ErrMultipleAgentsMatched)).To(BeTrue())
+		Expect(workload).To(BeNil())
+	})
 
 		It("should fall back to Agent CRD when no Deployment or StatefulSet matches", func() {
 			By("creating an Agent CRD with agent labels")

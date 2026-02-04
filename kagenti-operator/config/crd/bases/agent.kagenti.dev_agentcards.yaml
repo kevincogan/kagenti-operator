@@ -34,6 +34,10 @@ spec:
       jsonPath: .status.card.name
       name: Agent
       type: string
+    - description: Identity Bound
+      jsonPath: .status.bindingStatus.bound
+      name: Bound
+      type: boolean
     - description: Sync Status
       jsonPath: .status.conditions[?(@.type=='Synced')].status
       name: Synced
@@ -70,6 +74,45 @@ spec:
           spec:
             description: AgentCardSpec defines the desired state of AgentCard.
             properties:
+              identityBinding:
+                description: IdentityBinding specifies SPIFFE identity binding configuration
+                properties:
+                  allowedSpiffeIDs:
+                    description: |-
+                      AllowedSpiffeIDs is the allowlist of SPIFFE IDs that can bind to this agent.
+                      Each ID must be a valid SPIFFE ID in the format spiffe://<trust-domain>/<path>
+                    items:
+                      description: SpiffeID represents a SPIFFE identity in the format
+                        spiffe://<trust-domain>/<path>
+                      pattern: ^spiffe://[a-zA-Z0-9][a-zA-Z0-9\-\.]*[a-zA-Z0-9](/[a-zA-Z0-9\-\._~%!$&'()*+,;=:@]+)*$
+                      type: string
+                    minItems: 1
+                    type: array
+                  expectedSpiffeID:
+                    description: |-
+                      ExpectedSpiffeID overrides the auto-derived SPIFFE ID for this workload.
+                      Use this when your SPIRE configuration uses a non-standard identity format
+                      (e.g., pod labels, container names, or other workload attestor selectors).
+                      If not specified, the controller derives the ID as:
+                        spiffe://<trust-domain>/ns/<namespace>/sa/<serviceAccount>
+                      See: https://github.com/spiffe/spire/blob/main/doc/plugin_agent_workloadattestor_k8s.md
+                    pattern: ^spiffe://[a-zA-Z0-9][a-zA-Z0-9\-\.]*[a-zA-Z0-9](/[a-zA-Z0-9\-\._~%!$&'()*+,;=:@]+)*$
+                    type: string
+                  strict:
+                    default: false
+                    description: |-
+                      Strict enables strict enforcement mode. When true and binding fails,
+                      the Agent controller will scale the deployment to 0.
+                    type: boolean
+                  trustDomain:
+                    description: |-
+                      TrustDomain overrides the controller's default trust domain.
+                      Must be a valid DNS-like string without slashes.
+                    pattern: ^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$
+                    type: string
+                required:
+                - allowedSpiffeIDs
+                type: object
               selector:
                 description: |-
                   Selector identifies the Agent to index using label matching.
@@ -119,6 +162,29 @@ spec:
           status:
             description: AgentCardStatus defines the observed state of AgentCard.
             properties:
+              bindingStatus:
+                description: BindingStatus contains the result of identity binding
+                  evaluation
+                properties:
+                  bound:
+                    description: Bound indicates whether the expected SPIFFE ID is
+                      in the allowlist
+                    type: boolean
+                  lastEvaluationTime:
+                    description: LastEvaluationTime is when the binding was last evaluated
+                    format: date-time
+                    type: string
+                  message:
+                    description: Message is a human-readable description of the binding
+                      status
+                    type: string
+                  reason:
+                    description: Reason is a machine-readable reason for the binding
+                      status
+                    type: string
+                required:
+                - bound
+                type: object
               card:
                 description: Card contains the cached agent card data
                 properties:
@@ -218,6 +284,10 @@ spec:
                     description: Version is the agent's version string
                     type: string
                 type: object
+              cardId:
+                description: CardId is the SHA256 hash of the JCS-canonicalized card
+                  content (optional drift detection)
+                type: string
               conditions:
                 description: Conditions represent the current state of the indexing
                   process
@@ -276,6 +346,10 @@ spec:
                   - type
                   type: object
                 type: array
+              expectedSpiffeID:
+                description: ExpectedSpiffeID is the derived SPIFFE ID based on Kubernetes
+                  metadata
+                type: string
               lastSyncTime:
                 description: LastSyncTime is when the agent card was last successfully
                   fetched

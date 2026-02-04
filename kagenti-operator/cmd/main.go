@@ -68,6 +68,7 @@ func main() {
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	var enableClientRegistration bool
+	var defaultTrustDomain string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -88,6 +89,8 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.BoolVar(&enableClientRegistration, "enable-client-registration", true,
 		"If set, Kagenti will register clients (agents and tools) in Keycloak")
+	flag.StringVar(&defaultTrustDomain, "default-trust-domain", "cluster.local",
+		"Default SPIFFE trust domain for identity binding evaluation")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -223,6 +226,7 @@ func main() {
 		Scheme:                   mgr.GetScheme(),
 		EnableClientRegistration: enableClientRegistration,
 		Distribution:             distType,
+		Recorder:                 mgr.GetEventRecorderFor("agent-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Agent")
 		os.Exit(1)
@@ -244,8 +248,10 @@ func main() {
 	}
 
 	if err = (&controller.AgentCardReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Recorder:    mgr.GetEventRecorderFor("agentcard-controller"),
+		TrustDomain: defaultTrustDomain,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentCard")
 		os.Exit(1)

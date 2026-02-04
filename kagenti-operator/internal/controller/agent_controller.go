@@ -34,11 +34,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // AgentReconciler reconciles a Agent object
@@ -47,6 +50,7 @@ type AgentReconciler struct {
 	Scheme                   *runtime.Scheme
 	EnableClientRegistration bool
 	Distribution             distribution.Type
+	Recorder                 record.EventRecorder
 }
 
 var (
@@ -62,6 +66,7 @@ const (
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agents,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agents/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agents/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agentcards,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
@@ -122,6 +127,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err != nil {
 		return serviceResult, err
 	}
+
+	// Enforce identity binding (scale to 0 if strict binding fails)
+	if bindingResult, err := r.enforceIdentityBinding(ctx, agent); err != nil {
+		return bindingResult, err
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -716,6 +727,229 @@ func (r *AgentReconciler) createServiceForAgent(agent *agentv1alpha1.Agent) *cor
 	}
 }
 
+// enforceIdentityBinding checks AgentCards selecting this Agent and enforces strict binding
+func (r *AgentReconciler) enforceIdentityBinding(ctx context.Context, agent *agentv1alpha1.Agent) (ctrl.Result, error) {
+	// List AgentCards in the same namespace
+	agentCards := &agentv1alpha1.AgentCardList{}
+	if err := r.List(ctx, agentCards, client.InNamespace(agent.Namespace)); err != nil {
+		logger.Error(err, "Failed to list AgentCards", "agent", agent.Name)
+		return ctrl.Result{}, err
+	}
+
+	// Find AgentCards that select this Agent
+	var selectingCards []*agentv1alpha1.AgentCard
+	for i := range agentCards.Items {
+		card := &agentCards.Items[i]
+		if r.agentCardSelectsAgent(card, agent) {
+			selectingCards = append(selectingCards, card)
+		}
+	}
+
+	// Check if any strict binding has failed
+	var failedBindings []string
+	for _, card := range selectingCards {
+		if card.Spec.IdentityBinding != nil &&
+			card.Spec.IdentityBinding.Strict &&
+			(card.Status.BindingStatus == nil || !card.Status.BindingStatus.Bound) {
+			reason := "unknown"
+			if card.Status.BindingStatus != nil {
+				reason = card.Status.BindingStatus.Message
+			}
+			failedBindings = append(failedBindings, fmt.Sprintf("%s: %s", card.Name, reason))
+		}
+	}
+
+	// Get the deployment
+	deployment := &appsv1.Deployment{}
+	if err := r.Get(ctx, types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace}, deployment); err != nil {
+		if errors.IsNotFound(err) {
+			// Deployment not created yet
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	wasDisabled := agent.Status.BindingEnforcement != nil && agent.Status.BindingEnforcement.DisabledByBinding
+
+	if len(failedBindings) > 0 {
+		// Strict binding failed - disable the agent
+		return r.disableAgentForBinding(ctx, agent, deployment, failedBindings, wasDisabled)
+	}
+
+	// All bindings pass (or no strict bindings) - restore if previously disabled
+	if wasDisabled {
+		return r.restoreAgentFromBinding(ctx, agent, deployment)
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// disableAgentForBinding scales the deployment to 0 and annotates it
+func (r *AgentReconciler) disableAgentForBinding(ctx context.Context, agent *agentv1alpha1.Agent, deployment *appsv1.Deployment, failedBindings []string, wasDisabled bool) (ctrl.Result, error) {
+	reason := fmt.Sprintf("Identity binding failed: %v", failedBindings)
+
+	// Only store original replicas if not already disabled
+	if !wasDisabled && deployment.Spec.Replicas != nil && *deployment.Spec.Replicas > 0 {
+		originalReplicas := *deployment.Spec.Replicas
+
+		// Update agent status with binding enforcement info
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latestAgent := &agentv1alpha1.Agent{}
+			if err := r.Get(ctx, types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace}, latestAgent); err != nil {
+				return err
+			}
+			now := metav1.Now()
+			latestAgent.Status.BindingEnforcement = &agentv1alpha1.BindingEnforcementStatus{
+				DisabledByBinding: true,
+				OriginalReplicas:  &originalReplicas,
+				DisabledAt:        &now,
+				DisabledReason:    reason,
+			}
+			meta.SetStatusCondition(&latestAgent.Status.Conditions, metav1.Condition{
+				Type:               "BindingEnforced",
+				Status:             metav1.ConditionTrue,
+				LastTransitionTime: now,
+				Reason:             "StrictBindingFailed",
+				Message:            reason,
+			})
+			return r.Status().Update(ctx, latestAgent)
+		}); err != nil {
+			logger.Error(err, "Failed to update agent binding enforcement status")
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Scale deployment to 0 and add annotations
+	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas > 0 {
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latestDeployment := &appsv1.Deployment{}
+			if err := r.Get(ctx, types.NamespacedName{Name: deployment.Name, Namespace: deployment.Namespace}, latestDeployment); err != nil {
+				return err
+			}
+			latestDeployment.Spec.Replicas = ptr.To(int32(0))
+			if latestDeployment.Annotations == nil {
+				latestDeployment.Annotations = make(map[string]string)
+			}
+			latestDeployment.Annotations[AnnotationDisabledBy] = DisabledByIdentityBinding
+			latestDeployment.Annotations[AnnotationDisabledReason] = reason
+			return r.Update(ctx, latestDeployment)
+		}); err != nil {
+			logger.Error(err, "Failed to scale deployment to 0 for binding enforcement")
+			return ctrl.Result{}, err
+		}
+
+		logger.Info("Disabled agent due to strict binding failure", "agent", agent.Name, "reason", reason)
+		if r.Recorder != nil {
+			r.Recorder.Event(agent, corev1.EventTypeWarning, "BindingEnforced",
+				fmt.Sprintf("Agent disabled due to strict identity binding failure: %s", reason))
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// restoreAgentFromBinding restores the deployment replicas after binding passes
+func (r *AgentReconciler) restoreAgentFromBinding(ctx context.Context, agent *agentv1alpha1.Agent, deployment *appsv1.Deployment) (ctrl.Result, error) {
+	// Get original replicas from status
+	originalReplicas := int32(1)
+	if agent.Status.BindingEnforcement != nil && agent.Status.BindingEnforcement.OriginalReplicas != nil {
+		originalReplicas = *agent.Status.BindingEnforcement.OriginalReplicas
+	}
+	if agent.Spec.Replicas != nil {
+		originalReplicas = *agent.Spec.Replicas
+	}
+
+	// Restore deployment replicas and remove annotations
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latestDeployment := &appsv1.Deployment{}
+		if err := r.Get(ctx, types.NamespacedName{Name: deployment.Name, Namespace: deployment.Namespace}, latestDeployment); err != nil {
+			return err
+		}
+		latestDeployment.Spec.Replicas = &originalReplicas
+		delete(latestDeployment.Annotations, AnnotationDisabledBy)
+		delete(latestDeployment.Annotations, AnnotationDisabledReason)
+		return r.Update(ctx, latestDeployment)
+	}); err != nil {
+		logger.Error(err, "Failed to restore deployment replicas")
+		return ctrl.Result{}, err
+	}
+
+	// Clear binding enforcement status
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latestAgent := &agentv1alpha1.Agent{}
+		if err := r.Get(ctx, types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace}, latestAgent); err != nil {
+			return err
+		}
+		latestAgent.Status.BindingEnforcement = nil
+		meta.SetStatusCondition(&latestAgent.Status.Conditions, metav1.Condition{
+			Type:               "BindingEnforced",
+			Status:             metav1.ConditionFalse,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "BindingRestored",
+			Message:            "All strict identity bindings now pass",
+		})
+		return r.Status().Update(ctx, latestAgent)
+	}); err != nil {
+		logger.Error(err, "Failed to clear binding enforcement status")
+		return ctrl.Result{}, err
+	}
+
+	logger.Info("Restored agent after binding passed", "agent", agent.Name, "replicas", originalReplicas)
+	if r.Recorder != nil {
+		r.Recorder.Event(agent, corev1.EventTypeNormal, "BindingRestored",
+			fmt.Sprintf("Agent restored with %d replicas after identity binding passed", originalReplicas))
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// agentCardSelectsAgent checks if an AgentCard's selector matches an Agent
+func (r *AgentReconciler) agentCardSelectsAgent(card *agentv1alpha1.AgentCard, agent *agentv1alpha1.Agent) bool {
+	if agent.Labels == nil {
+		return false
+	}
+	for key, value := range card.Spec.Selector.MatchLabels {
+		if agent.Labels[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+// mapAgentCardToAgent maps AgentCard events to Agent reconcile requests
+func (r *AgentReconciler) mapAgentCardToAgent(ctx context.Context, obj client.Object) []reconcile.Request {
+	card, ok := obj.(*agentv1alpha1.AgentCard)
+	if !ok {
+		return nil
+	}
+
+	// Only trigger for cards with strict identity binding
+	if card.Spec.IdentityBinding == nil || !card.Spec.IdentityBinding.Strict {
+		return nil
+	}
+
+	// Find matching Agents
+	agents := &agentv1alpha1.AgentList{}
+	if err := r.List(ctx, agents, client.InNamespace(card.Namespace)); err != nil {
+		logger.Error(err, "Failed to list Agents for AgentCard mapping")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, agent := range agents.Items {
+		if r.agentCardSelectsAgent(card, &agent) {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      agent.Name,
+					Namespace: agent.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
 func (r *AgentReconciler) handleDeletion(ctx context.Context, agent *agentv1alpha1.Agent) (ctrl.Result, error) {
 	if controllerutil.ContainsFinalizer(agent, AGENT_FINALIZER) {
 		deployment := &appsv1.Deployment{}
@@ -769,6 +1003,10 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&agentv1alpha1.Agent{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Watches(
+			&agentv1alpha1.AgentCard{},
+			handler.EnqueueRequestsFromMapFunc(r.mapAgentCardToAgent),
+		).
 		Named("Agent").
 		Complete(r)
 }

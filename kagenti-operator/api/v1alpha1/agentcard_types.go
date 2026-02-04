@@ -38,6 +38,44 @@ type AgentCardSpec struct {
 	// If both TargetRef and Selector are specified, TargetRef takes precedence.
 	// +optional
 	Selector *AgentSelector `json:"selector,omitempty"`
+
+	// IdentityBinding specifies SPIFFE identity binding configuration
+	// +optional
+	IdentityBinding *IdentityBinding `json:"identityBinding,omitempty"`
+}
+
+// SpiffeID represents a SPIFFE identity in the format spiffe://<trust-domain>/<path>
+// +kubebuilder:validation:Pattern=`^spiffe://[a-zA-Z0-9][a-zA-Z0-9\-\.]*[a-zA-Z0-9](/[a-zA-Z0-9\-\._~%!$&'()*+,;=:@]+)*$`
+type SpiffeID string
+
+// IdentityBinding configures workload identity binding for an AgentCard
+type IdentityBinding struct {
+	// TrustDomain overrides the controller's default trust domain.
+	// Must be a valid DNS-like string without slashes.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$`
+	TrustDomain string `json:"trustDomain,omitempty"`
+
+	// ExpectedSpiffeID overrides the auto-derived SPIFFE ID for this workload.
+	// Use this when your SPIRE configuration uses a non-standard identity format
+	// (e.g., pod labels, container names, or other workload attestor selectors).
+	// If not specified, the controller derives the ID as:
+	//   spiffe://<trust-domain>/ns/<namespace>/sa/<serviceAccount>
+	// See: https://github.com/spiffe/spire/blob/main/doc/plugin_agent_workloadattestor_k8s.md
+	// +optional
+	ExpectedSpiffeID SpiffeID `json:"expectedSpiffeID,omitempty"`
+
+	// AllowedSpiffeIDs is the allowlist of SPIFFE IDs that can bind to this agent.
+	// Each ID must be a valid SPIFFE ID in the format spiffe://<trust-domain>/<path>
+	// +required
+	// +kubebuilder:validation:MinItems=1
+	AllowedSpiffeIDs []SpiffeID `json:"allowedSpiffeIDs"`
+
+	// Strict enables strict enforcement mode. When true and binding fails,
+	// the Agent controller will scale the deployment to 0.
+	// +optional
+	// +kubebuilder:default=false
+	Strict bool `json:"strict,omitempty"`
 }
 
 // TargetRef identifies a workload that backs this agent using duck typing.
@@ -91,6 +129,36 @@ type AgentCardStatus struct {
 	// ValidSignature indicates if the agent card signature was validated (future use)
 	// +optional
 	ValidSignature *bool `json:"validSignature,omitempty"`
+
+	// CardId is the SHA256 hash of the JCS-canonicalized card content (optional drift detection)
+	// +optional
+	CardId string `json:"cardId,omitempty"`
+
+	// ExpectedSpiffeID is the derived SPIFFE ID based on Kubernetes metadata
+	// +optional
+	ExpectedSpiffeID string `json:"expectedSpiffeID,omitempty"`
+
+	// BindingStatus contains the result of identity binding evaluation
+	// +optional
+	BindingStatus *BindingStatus `json:"bindingStatus,omitempty"`
+}
+
+// BindingStatus represents the result of identity binding evaluation
+type BindingStatus struct {
+	// Bound indicates whether the expected SPIFFE ID is in the allowlist
+	Bound bool `json:"bound"`
+
+	// Reason is a machine-readable reason for the binding status
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
+	// Message is a human-readable description of the binding status
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// LastEvaluationTime is when the binding was last evaluated
+	// +optional
+	LastEvaluationTime *metav1.Time `json:"lastEvaluationTime,omitempty"`
 }
 
 // AgentCardData represents the A2A agent card structure
@@ -197,6 +265,7 @@ type SkillParameter struct {
 // +kubebuilder:printcolumn:name="Kind",type="string",JSONPath=".status.targetRef.kind",description="Workload Kind"
 // +kubebuilder:printcolumn:name="Target",type="string",JSONPath=".status.targetRef.name",description="Target Workload"
 // +kubebuilder:printcolumn:name="Agent",type="string",JSONPath=".status.card.name",description="Agent Name"
+// +kubebuilder:printcolumn:name="Bound",type="boolean",JSONPath=".status.bindingStatus.bound",description="Identity Bound"
 // +kubebuilder:printcolumn:name="Synced",type="string",JSONPath=".status.conditions[?(@.type=='Synced')].status",description="Sync Status"
 // +kubebuilder:printcolumn:name="LastSync",type="date",JSONPath=".status.lastSyncTime",description="Last Sync Time"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
