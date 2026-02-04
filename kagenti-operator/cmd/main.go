@@ -260,17 +260,15 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentCard")
 		os.Exit(1)
 	}
-	// Only enable AgentCardSync controller if legacy Agent CRD support is enabled
-	// This controller watches Agent CRDs and automatically creates AgentCards
-	if enableLegacyAgentCRD {
-		if err = (&controller.AgentCardSyncReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "AgentCardSync")
-		}
-	} else {
-		setupLog.Info("Legacy Agent CRD support is disabled, skipping AgentCardSync controller")
+	// AgentCardSync controller now watches Deployments, StatefulSets, and optionally Agent CRDs
+	// It automatically creates AgentCards for workloads with agent labels
+	if err = (&controller.AgentCardSyncReconciler{
+		Client:               mgr.GetClient(),
+		Scheme:               mgr.GetScheme(),
+		EnableLegacyAgentCRD: enableLegacyAgentCRD,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AgentCardSync")
+		os.Exit(1)
 	}
 	if err = webhookv1alpha1.SetupAgentBuildWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "AgentBuild")
