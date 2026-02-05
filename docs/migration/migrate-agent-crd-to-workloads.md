@@ -276,4 +276,4 @@ The operator supports running in hybrid mode indefinitely, so you can migrate gr
 
 For questions or issues:
 - Open an issue at https://github.com/kagenti/operator/issues
-- Refer to the full migration plan at `docs/plans/migrate-agentcard-controller-to-workloads.md`
+- Refer to the full migration plan in the project documentation.
