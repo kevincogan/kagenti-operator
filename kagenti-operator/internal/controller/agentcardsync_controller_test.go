@@ -224,13 +224,16 @@ var _ = Describe("AgentCardSync Controller", func() {
 
 			By("reconciling the Agent")
 			reconciler := &AgentCardSyncReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:               k8sClient,
+				Scheme:               k8sClient.Scheme(),
+				EnableLegacyAgentCRD: true,
 			}
 
-			_, err := ReconcileAgent(ctx, reconciler, types.NamespacedName{
-				Name:      agentNewLabel,
-				Namespace: namespace,
+			_, err := reconciler.ReconcileAgent(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      agentNewLabel,
+					Namespace: namespace,
+				},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -248,7 +251,7 @@ var _ = Describe("AgentCardSync Controller", func() {
 			Expect(agentCard.Spec.TargetRef).NotTo(BeNil())
 			Expect(agentCard.Spec.TargetRef.Kind).To(Equal("Agent"))
 			Expect(agentCard.Spec.TargetRef.Name).To(Equal(agentNewLabel))
-			Expect(agentCard.Spec.TargetRef.Namespace).To(Equal(namespace))
+			Expect(agentCard.Spec.TargetRef.APIVersion).To(Equal("agent.kagenti.dev/v1alpha1"))
 			// The reconciler now uses TargetRef instead of Selector; ensure no selector is set.
 			Expect(agentCard.Spec.Selector).To(BeNil())
 
@@ -297,11 +300,17 @@ var _ = Describe("AgentCardSync Controller", func() {
 
 			By("reconciling the Agent")
 			reconciler := &AgentCardSyncReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:               k8sClient,
+				Scheme:               k8sClient.Scheme(),
+				EnableLegacyAgentCRD: true,
 			}
 
-			_, err := reconciler.ReconcileAgent(ctx, agent)
+			_, err := reconciler.ReconcileAgent(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      agentBothLabels,
+					Namespace: namespace,
+				},
+			})
 			Expect(err).NotTo(HaveOccurred())
 
 			By("checking that an AgentCard was created")
@@ -318,7 +327,7 @@ var _ = Describe("AgentCardSync Controller", func() {
 			Expect(agentCard.Spec.TargetRef).NotTo(BeNil())
 			Expect(agentCard.Spec.TargetRef.Kind).To(Equal("Agent"))
 			Expect(agentCard.Spec.TargetRef.Name).To(Equal(agentBothLabels))
-			Expect(agentCard.Spec.TargetRef.Namespace).To(Equal(namespace))
+			Expect(agentCard.Spec.TargetRef.APIVersion).To(Equal("agent.kagenti.dev/v1alpha1"))
 			Expect(agentCard.OwnerReferences).NotTo(BeEmpty())
 			Expect(agentCard.OwnerReferences[0].Name).To(Equal(agentBothLabels))
 
