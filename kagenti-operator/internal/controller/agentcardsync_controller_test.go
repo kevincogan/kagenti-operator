@@ -228,11 +228,9 @@ var _ = Describe("AgentCardSync Controller", func() {
 				Scheme: k8sClient.Scheme(),
 			}
 
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      agentNewLabel,
-					Namespace: namespace,
-				},
+			_, err := ReconcileAgent(ctx, reconciler, types.NamespacedName{
+				Name:      agentNewLabel,
+				Namespace: namespace,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
