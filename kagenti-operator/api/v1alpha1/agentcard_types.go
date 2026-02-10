@@ -48,31 +48,41 @@ type AgentCardSpec struct {
 // +kubebuilder:validation:Pattern=`^spiffe://[a-zA-Z0-9][a-zA-Z0-9\-\.]*[a-zA-Z0-9](/[a-zA-Z0-9\-\._~%!$&'()*+,;=:@]+)*$`
 type SpiffeID string
 
-// IdentityBinding configures workload identity binding for an AgentCard
+// IdentityBinding configures workload identity binding for an AgentCard.
+//
+// The SPIFFE ID used for binding comes exclusively from the JWS protected header
+// spiffe_id claim, which is cryptographically bound to the signature. Sign the card
+// with --spiffe-id to embed the workload identity during signing.
+//
+// If the JWS protected header does not contain a spiffe_id, binding fails.
 type IdentityBinding struct {
-	// TrustDomain overrides the controller's default trust domain.
-	// Must be a valid DNS-like string without slashes.
+	// Deprecated: TrustDomain is no longer used. The trust domain is determined
+	// from the SPIFFE ID in the JWS protected header.
+	// This field is retained for backward compatibility and will be removed in a future release.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$`
 	TrustDomain string `json:"trustDomain,omitempty"`
 
-	// ExpectedSpiffeID overrides the auto-derived SPIFFE ID for this workload.
-	// Use this when your SPIRE configuration uses a non-standard identity format
-	// (e.g., pod labels, container names, or other workload attestor selectors).
-	// If not specified, the controller derives the ID as:
-	//   spiffe://<trust-domain>/ns/<namespace>/sa/<serviceAccount>
-	// See: https://github.com/spiffe/spire/blob/main/doc/plugin_agent_workloadattestor_k8s.md
+	// Deprecated: ExpectedSpiffeID is no longer used. The SPIFFE ID now comes exclusively
+	// from the JWS protected header (sign with --spiffe-id). This ensures all identity
+	// claims are cryptographically bound to the signature.
+	// This field is retained for backward compatibility and will be removed in a future release.
 	// +optional
 	ExpectedSpiffeID SpiffeID `json:"expectedSpiffeID,omitempty"`
 
 	// AllowedSpiffeIDs is the allowlist of SPIFFE IDs that can bind to this agent.
-	// Each ID must be a valid SPIFFE ID in the format spiffe://<trust-domain>/<path>
+	// Each ID must be a valid SPIFFE ID in the format spiffe://<trust-domain>/<path>.
+	// The SPIFFE ID from the JWS protected header must match one of these entries.
 	// +required
 	// +kubebuilder:validation:MinItems=1
 	AllowedSpiffeIDs []SpiffeID `json:"allowedSpiffeIDs"`
 
-	// Strict enables strict enforcement mode. When true and binding fails,
-	// the Agent controller will scale the deployment to 0.
+	// Strict enables strict enforcement mode for identity binding.
+	// When true, binding failures result in network isolation: the signature-verified
+	// label is removed from pods, and NetworkPolicy restricts all ingress/egress.
+	// When false (audit mode), binding results are recorded in status but network
+	// access is not affected.
+	// NOTE: Scale-to-zero enforcement is only available via the legacy Agent CRD controller.
 	// +optional
 	// +kubebuilder:default=false
 	Strict bool `json:"strict,omitempty"`
@@ -126,15 +136,33 @@ type AgentCardStatus struct {
 	// +optional
 	TargetRef *TargetRef `json:"targetRef,omitempty"`
 
-	// ValidSignature indicates if the agent card signature was validated (future use)
+	// ValidSignature indicates if the agent card signature was validated
 	// +optional
 	ValidSignature *bool `json:"validSignature,omitempty"`
+
+	// SignatureVerificationDetails contains details about the last signature verification
+	// +optional
+	SignatureVerificationDetails string `json:"signatureVerificationDetails,omitempty"`
+
+	// SignatureKeyID is the key ID used for verification (from JWS protected header kid)
+	// +optional
+	SignatureKeyID string `json:"signatureKeyId,omitempty"`
+
+	// SignatureSpiffeID is the SPIFFE ID extracted from the JWS protected header.
+	// This enables cross-referencing the signer's identity with the identity binding evaluation.
+	// +optional
+	SignatureSpiffeID string `json:"signatureSpiffeId,omitempty"`
+
+	// SignatureIdentityMatch indicates if both signature AND identity binding pass.
+	// true only when ValidSignature is true AND BindingStatus.Bound is true.
+	// +optional
+	SignatureIdentityMatch *bool `json:"signatureIdentityMatch,omitempty"`
 
 	// CardId is the SHA256 hash of the JCS-canonicalized card content (optional drift detection)
 	// +optional
 	CardId string `json:"cardId,omitempty"`
 
-	// ExpectedSpiffeID is the derived SPIFFE ID based on Kubernetes metadata
+	// ExpectedSpiffeID is the SPIFFE ID used for binding evaluation (from JWS protected header)
 	// +optional
 	ExpectedSpiffeID string `json:"expectedSpiffeID,omitempty"`
 
@@ -199,6 +227,37 @@ type AgentCardData struct {
 	// SupportsAuthenticatedExtendedCard indicates if the agent has an extended card
 	// +optional
 	SupportsAuthenticatedExtendedCard *bool `json:"supportsAuthenticatedExtendedCard,omitempty"`
+
+	// Signatures contains JWS signatures per A2A spec section 8.4.2.
+	// Each element uses JWS JSON Serialization with protected header containing
+	// the algorithm (alg), key ID (kid), and optional SPIFFE ID (spiffe_id).
+	// +optional
+	Signatures []AgentCardSignature `json:"signatures,omitempty"`
+}
+
+// AgentCardSignature represents a JWS signature on an AgentCard.
+// Follows the A2A specification section 8.4.2 — JWS JSON Serialization.
+type AgentCardSignature struct {
+	// Protected is the base64url-encoded JWS protected header.
+	// Decoded, it contains {"alg":"RS256","kid":"key-1","spiffe_id":"spiffe://..."}.
+	// +required
+	Protected string `json:"protected"`
+
+	// Signature is the base64url-encoded JWS signature value.
+	// The signing input is: BASE64URL(protected) || '.' || BASE64URL(canonical_payload)
+	// +required
+	Signature string `json:"signature"`
+
+	// Header contains optional unprotected JWS header parameters.
+	// +optional
+	Header *SignatureHeader `json:"header,omitempty"`
+}
+
+// SignatureHeader contains unprotected JWS header parameters.
+type SignatureHeader struct {
+	// Timestamp is when the signature was created (ISO 8601 string)
+	// +optional
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 // AgentCapabilities defines A2A feature support
@@ -265,6 +324,7 @@ type SkillParameter struct {
 // +kubebuilder:printcolumn:name="Kind",type="string",JSONPath=".status.targetRef.kind",description="Workload Kind"
 // +kubebuilder:printcolumn:name="Target",type="string",JSONPath=".status.targetRef.name",description="Target Workload"
 // +kubebuilder:printcolumn:name="Agent",type="string",JSONPath=".status.card.name",description="Agent Name"
+// +kubebuilder:printcolumn:name="Verified",type="boolean",JSONPath=".status.validSignature",description="Signature Verified"
 // +kubebuilder:printcolumn:name="Bound",type="boolean",JSONPath=".status.bindingStatus.bound",description="Identity Bound"
 // +kubebuilder:printcolumn:name="Synced",type="string",JSONPath=".status.conditions[?(@.type=='Synced')].status",description="Sync Status"
 // +kubebuilder:printcolumn:name="LastSync",type="date",JSONPath=".status.lastSyncTime",description="Last Sync Time"

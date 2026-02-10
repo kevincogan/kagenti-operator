@@ -115,7 +115,7 @@ var _ = Describe("Identity Binding", func() {
 			}
 			Expect(k8sClient.Create(ctx, service)).To(Succeed())
 
-			By("creating an AgentCard with matching SPIFFE ID")
+			By("creating an AgentCard with identity binding (SPIFFE ID via JWS header)")
 			expectedSpiffeID := "spiffe://" + trustDomain + "/ns/" + namespace + "/sa/test-sa"
 			agentCard := &agentv1alpha1.AgentCard{
 				ObjectMeta: metav1.ObjectMeta{
@@ -131,7 +131,6 @@ var _ = Describe("Identity Binding", func() {
 						},
 					},
 					IdentityBinding: &agentv1alpha1.IdentityBinding{
-						TrustDomain:      trustDomain,
 						AllowedSpiffeIDs: []agentv1alpha1.SpiffeID{agentv1alpha1.SpiffeID(expectedSpiffeID)},
 						Strict:           false,
 					},
@@ -139,7 +138,7 @@ var _ = Describe("Identity Binding", func() {
 			}
 			Expect(k8sClient.Create(ctx, agentCard)).To(Succeed())
 
-			By("reconciling the AgentCard")
+			By("reconciling the AgentCard (first reconcile adds finalizer)")
 			reconciler := &AgentCardReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -150,16 +149,26 @@ var _ = Describe("Identity Binding", func() {
 						URL:     "http://localhost:8000",
 					},
 				},
-				TrustDomain: trustDomain,
 			}
 
-			// First reconcile adds finalizer
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: agentCardName, Namespace: namespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Second reconcile evaluates binding
+			By("simulating a verified signature with SPIFFE ID in JWS protected header")
+			Eventually(func() error {
+				card := &agentv1alpha1.AgentCard{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: agentCardName, Namespace: namespace}, card); err != nil {
+					return err
+				}
+				validSig := true
+				card.Status.ValidSignature = &validSig
+				card.Status.SignatureSpiffeID = expectedSpiffeID
+				return k8sClient.Status().Update(ctx, card)
+			}).Should(Succeed())
+
+			By("reconciling again (evaluates binding with JWS SPIFFE ID)")
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: agentCardName, Namespace: namespace},
 			})
@@ -257,7 +266,8 @@ var _ = Describe("Identity Binding", func() {
 			}
 			Expect(k8sClient.Create(ctx, service)).To(Succeed())
 
-			By("creating an AgentCard with non-matching SPIFFE ID")
+			By("creating an AgentCard with identity binding")
+			// JWS SPIFFE ID will NOT match the allowlist → binding should fail
 			agentCard := &agentv1alpha1.AgentCard{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      agentCardName,
@@ -272,7 +282,6 @@ var _ = Describe("Identity Binding", func() {
 						},
 					},
 					IdentityBinding: &agentv1alpha1.IdentityBinding{
-						TrustDomain:      trustDomain,
 						AllowedSpiffeIDs: []agentv1alpha1.SpiffeID{"spiffe://" + trustDomain + "/ns/other/sa/other-sa"},
 						Strict:           false,
 					},
@@ -280,7 +289,7 @@ var _ = Describe("Identity Binding", func() {
 			}
 			Expect(k8sClient.Create(ctx, agentCard)).To(Succeed())
 
-			By("reconciling the AgentCard")
+			By("reconciling the AgentCard (first reconcile adds finalizer)")
 			reconciler := &AgentCardReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -291,16 +300,26 @@ var _ = Describe("Identity Binding", func() {
 						URL:     "http://localhost:8000",
 					},
 				},
-				TrustDomain: trustDomain,
 			}
 
-			// First reconcile adds finalizer
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: agentCardName, Namespace: namespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Second reconcile evaluates binding
+			By("simulating a verified signature with SPIFFE ID that doesn't match allowlist")
+			Eventually(func() error {
+				card := &agentv1alpha1.AgentCard{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: agentCardName, Namespace: namespace}, card); err != nil {
+					return err
+				}
+				validSig := true
+				card.Status.ValidSignature = &validSig
+				card.Status.SignatureSpiffeID = "spiffe://" + trustDomain + "/ns/" + namespace + "/sa/test-sa"
+				return k8sClient.Status().Update(ctx, card)
+			}).Should(Succeed())
+
+			By("reconciling again (evaluates binding — SPIFFE ID not in allowlist)")
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: agentCardName, Namespace: namespace},
 			})
@@ -408,7 +427,6 @@ var _ = Describe("Identity Binding", func() {
 						},
 					},
 					IdentityBinding: &agentv1alpha1.IdentityBinding{
-						TrustDomain:      trustDomain,
 						AllowedSpiffeIDs: []agentv1alpha1.SpiffeID{"spiffe://" + trustDomain + "/ns/other/sa/other-sa"},
 						Strict:           true,
 					},
@@ -592,7 +610,6 @@ var _ = Describe("Identity Binding", func() {
 						},
 					},
 					IdentityBinding: &agentv1alpha1.IdentityBinding{
-						TrustDomain:      trustDomain,
 						AllowedSpiffeIDs: []agentv1alpha1.SpiffeID{agentv1alpha1.SpiffeID(expectedSpiffeID)},
 						Strict:           true,
 					},
@@ -707,93 +724,123 @@ var _ = Describe("Identity Binding", func() {
 		})
 	})
 
-	Context("SPIFFE ID Derivation", func() {
-		It("should derive expected SPIFFE ID from agent metadata", func() {
-			reconciler := &AgentCardReconciler{
-				Client:      k8sClient,
-				Scheme:      k8sClient.Scheme(),
-				TrustDomain: "my.domain",
-			}
-
-			// Create the agent in the cluster for getWorkloadServiceAccount to fetch
-			agent := &agentv1alpha1.Agent{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "spiffe-test-agent",
-					Namespace: "default",
-				},
-				Spec: agentv1alpha1.AgentSpec{
-					PodTemplateSpec: &corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							ServiceAccountName: "my-service-account",
-							Containers: []corev1.Container{
-								{
-									Name:  "agent",
-									Image: "test-image:latest",
-								},
-							},
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, agent)).To(Succeed())
-			defer k8sClient.Delete(ctx, agent)
-
-			workload := &WorkloadInfo{
-				Name:       agent.Name,
-				Namespace:  agent.Namespace,
-				Kind:       "Agent",
-				APIVersion: agentv1alpha1.GroupVersion.String(),
-			}
-
-			sa, err := reconciler.getWorkloadServiceAccount(ctx, workload)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(sa).To(Equal("my-service-account"))
-
-			// Expected SPIFFE ID format: spiffe://<trust-domain>/ns/<namespace>/sa/<serviceAccount>
-			expectedSpiffeID := "spiffe://my.domain/ns/default/sa/my-service-account"
-			actualSpiffeID := "spiffe://" + reconciler.TrustDomain + "/ns/" + workload.Namespace + "/sa/" + sa
-			Expect(actualSpiffeID).To(Equal(expectedSpiffeID))
-		})
-
-		It("should use default service account name pattern when not specified", func() {
+	Context("SPIFFE ID Source — JWS Protected Header Only", func() {
+		It("should fail binding when no SPIFFE ID is in the JWS protected header", func() {
 			reconciler := &AgentCardReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
 
-			// Create the agent in the cluster for getWorkloadServiceAccount to fetch
-			agent := &agentv1alpha1.Agent{
+			agentCard := &agentv1alpha1.AgentCard{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "spiffe-test-agent-default",
+					Name:      "no-spiffe-card",
 					Namespace: "default",
 				},
-				Spec: agentv1alpha1.AgentSpec{
-					PodTemplateSpec: &corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							// No ServiceAccountName specified
-							Containers: []corev1.Container{
-								{
-									Name:  "agent",
-									Image: "test-image:latest",
-								},
-							},
-						},
+				Spec: agentv1alpha1.AgentCardSpec{
+					IdentityBinding: &agentv1alpha1.IdentityBinding{
+						AllowedSpiffeIDs: []agentv1alpha1.SpiffeID{"spiffe://example.com/ns/default/sa/test"},
 					},
 				},
 			}
-			Expect(k8sClient.Create(ctx, agent)).To(Succeed())
-			defer k8sClient.Delete(ctx, agent)
+			Expect(k8sClient.Create(ctx, agentCard)).To(Succeed())
+			defer func() {
+				cleanupResource(ctx, &agentv1alpha1.AgentCard{}, "no-spiffe-card", "default")
+			}()
 
 			workload := &WorkloadInfo{
-				Name:       agent.Name,
-				Namespace:  agent.Namespace,
-				Kind:       "Agent",
-				APIVersion: agentv1alpha1.GroupVersion.String(),
+				Name:      "test-workload",
+				Namespace: "default",
+				Kind:      "Deployment",
 			}
 
-			sa, err := reconciler.getWorkloadServiceAccount(ctx, workload)
+			// No SignatureSpiffeID in status → binding fails
+			bound, err := reconciler.evaluateBinding(ctx, agentCard, workload)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(sa).To(Equal("spiffe-test-agent-default-sa"))
+			Expect(bound).To(BeFalse())
+		})
+
+		It("should bind when JWS SPIFFE ID matches the allowlist", func() {
+			reconciler := &AgentCardReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			jwsSpiffeID := "spiffe://example.com/ns/default/sa/from-jws"
+
+			agentCard := &agentv1alpha1.AgentCard{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "jws-spiffe-card",
+					Namespace: "default",
+				},
+				Spec: agentv1alpha1.AgentCardSpec{
+					IdentityBinding: &agentv1alpha1.IdentityBinding{
+						AllowedSpiffeIDs: []agentv1alpha1.SpiffeID{agentv1alpha1.SpiffeID(jwsSpiffeID)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, agentCard)).To(Succeed())
+			defer func() {
+				cleanupResource(ctx, &agentv1alpha1.AgentCard{}, "jws-spiffe-card", "default")
+			}()
+
+			// Simulate: signature was verified and SPIFFE ID stored in status
+			validSig := true
+			agentCard.Status.ValidSignature = &validSig
+			agentCard.Status.SignatureSpiffeID = jwsSpiffeID
+			Expect(k8sClient.Status().Update(ctx, agentCard)).To(Succeed())
+
+			workload := &WorkloadInfo{
+				Name:      "test-workload",
+				Namespace: "default",
+				Kind:      "Deployment",
+			}
+
+			// JWS header SPIFFE ID matches allowlist → binding passes
+			bound, err := reconciler.evaluateBinding(ctx, agentCard, workload)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(bound).To(BeTrue())
+		})
+
+		It("should not trust JWS SPIFFE ID when signature is invalid", func() {
+			reconciler := &AgentCardReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			jwsSpiffeID := "spiffe://example.com/ns/default/sa/from-jws"
+
+			agentCard := &agentv1alpha1.AgentCard{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "invalid-sig-spiffe-card",
+					Namespace: "default",
+				},
+				Spec: agentv1alpha1.AgentCardSpec{
+					IdentityBinding: &agentv1alpha1.IdentityBinding{
+						AllowedSpiffeIDs: []agentv1alpha1.SpiffeID{agentv1alpha1.SpiffeID(jwsSpiffeID)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, agentCard)).To(Succeed())
+			defer func() {
+				cleanupResource(ctx, &agentv1alpha1.AgentCard{}, "invalid-sig-spiffe-card", "default")
+			}()
+
+			// Simulate: signature verification FAILED but SPIFFE ID was in the header
+			invalidSig := false
+			agentCard.Status.ValidSignature = &invalidSig
+			agentCard.Status.SignatureSpiffeID = jwsSpiffeID // Controller clears this, but test defense-in-depth
+			Expect(k8sClient.Status().Update(ctx, agentCard)).To(Succeed())
+
+			workload := &WorkloadInfo{
+				Name:      "test-workload",
+				Namespace: "default",
+				Kind:      "Deployment",
+			}
+
+			// Defense-in-depth: invalid signature → JWS SPIFFE ID not trusted → fails
+			bound, err := reconciler.evaluateBinding(ctx, agentCard, workload)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(bound).To(BeFalse())
 		})
 	})
 

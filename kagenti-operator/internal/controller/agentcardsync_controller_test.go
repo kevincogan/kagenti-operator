@@ -103,6 +103,7 @@ var _ = Describe("AgentCardSync Controller", func() {
 				Client:               k8sClient,
 				Scheme:               k8sClient.Scheme(),
 				EnableLegacyAgentCRD: true,
+				AutoSyncGracePeriod:  -1, // disable grace period in tests
 			}
 
 			_, err := reconciler.ReconcileAgent(ctx, reconcile.Request{
@@ -142,7 +143,6 @@ var _ = Describe("AgentCardSync Controller", func() {
 					Namespace: namespace,
 					Labels: map[string]string{
 						LabelAgentType: LabelValueAgent,
-						// No protocol label
 					},
 				},
 				Spec: agentv1alpha1.AgentSpec{
@@ -168,6 +168,7 @@ var _ = Describe("AgentCardSync Controller", func() {
 				Client:               k8sClient,
 				Scheme:               k8sClient.Scheme(),
 				EnableLegacyAgentCRD: true,
+				AutoSyncGracePeriod:  -1,
 			}
 
 			_, err := reconciler.ReconcileAgent(ctx, reconcile.Request{
@@ -227,6 +228,7 @@ var _ = Describe("AgentCardSync Controller", func() {
 				Client:               k8sClient,
 				Scheme:               k8sClient.Scheme(),
 				EnableLegacyAgentCRD: true,
+				AutoSyncGracePeriod:  -1,
 			}
 
 			_, err := reconciler.ReconcileAgent(ctx, reconcile.Request{
@@ -303,6 +305,7 @@ var _ = Describe("AgentCardSync Controller", func() {
 				Client:               k8sClient,
 				Scheme:               k8sClient.Scheme(),
 				EnableLegacyAgentCRD: true,
+				AutoSyncGracePeriod:  -1,
 			}
 
 			_, err := reconciler.ReconcileAgent(ctx, reconcile.Request{
@@ -412,8 +415,9 @@ var _ = Describe("AgentCardSync Controller", func() {
 		It("should automatically create an AgentCard with targetRef for Deployment", func() {
 			By("reconciling the Deployment")
 			reconciler := &AgentCardSyncReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:              k8sClient,
+				Scheme:              k8sClient.Scheme(),
+				AutoSyncGracePeriod: -1,
 			}
 
 			_, err := reconciler.ReconcileDeployment(ctx, reconcile.Request{
@@ -484,8 +488,9 @@ var _ = Describe("AgentCardSync Controller", func() {
 
 			By("reconciling the Deployment")
 			reconciler := &AgentCardSyncReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:              k8sClient,
+				Scheme:              k8sClient.Scheme(),
+				AutoSyncGracePeriod: -1,
 			}
 
 			_, err := reconciler.ReconcileDeployment(ctx, reconcile.Request{
@@ -585,8 +590,9 @@ var _ = Describe("AgentCardSync Controller", func() {
 		It("should automatically create an AgentCard with targetRef for StatefulSet", func() {
 			By("reconciling the StatefulSet")
 			reconciler := &AgentCardSyncReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:              k8sClient,
+				Scheme:              k8sClient.Scheme(),
+				AutoSyncGracePeriod: -1,
 			}
 
 			_, err := reconciler.ReconcileStatefulSet(ctx, reconcile.Request{
@@ -712,8 +718,9 @@ var _ = Describe("AgentCardSync Controller", func() {
 		It("should migrate AgentCard from selector to targetRef", func() {
 			By("reconciling the Deployment")
 			reconciler := &AgentCardSyncReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:              k8sClient,
+				Scheme:              k8sClient.Scheme(),
+				AutoSyncGracePeriod: -1,
 			}
 
 			_, err := reconciler.ReconcileDeployment(ctx, reconcile.Request{
