@@ -61,6 +61,13 @@ const (
 	CLIENT_REGISTRATION_NAME = "kagenti-client-registration"
 	SPIFFY_HELPER_NAME       = "spiffe-helper"
 	AGENT_FINALIZER          = "agent.kagenti.dev/finalizer"
+
+	// Annotation keys for binding enforcement (legacy Agent CRD)
+	AnnotationDisabledBy     = "kagenti.io/disabled-by"
+	AnnotationDisabledReason = "kagenti.io/disabled-reason"
+
+	// Annotation values
+	DisabledByIdentityBinding = "identity-binding"
 )
 
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agents,verbs=get;list;watch;create;update;patch;delete
@@ -903,9 +910,16 @@ func (r *AgentReconciler) restoreAgentFromBinding(ctx context.Context, agent *ag
 	return ctrl.Result{}, nil
 }
 
-// agentCardSelectsAgent checks if an AgentCard's selector matches an Agent
+// agentCardSelectsAgent checks if an AgentCard references this Agent via targetRef or selector.
 func (r *AgentReconciler) agentCardSelectsAgent(card *agentv1alpha1.AgentCard, agent *agentv1alpha1.Agent) bool {
-	if agent.Labels == nil {
+	// Check targetRef first (preferred)
+	if card.Spec.TargetRef != nil {
+		return card.Spec.TargetRef.Kind == "Agent" &&
+			card.Spec.TargetRef.Name == agent.Name
+	}
+
+	// Fall back to selector (legacy) — guard against nil
+	if card.Spec.Selector == nil || agent.Labels == nil {
 		return false
 	}
 	for key, value := range card.Spec.Selector.MatchLabels {

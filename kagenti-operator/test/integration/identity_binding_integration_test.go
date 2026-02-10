@@ -169,12 +169,19 @@ func testMatchingBindingEvaluation(t *testing.T) {
 		Client:       k8sClient,
 		Scheme:       scheme,
 		AgentFetcher: &mockFetcher{},
-		TrustDomain:  trustDomain,
 	}
 
-	// Reconcile multiple times (first adds finalizer, subsequent evaluate binding)
-	// Use retry logic to handle "object modified" errors
-	for i := 0; i < 3; i++ {
+	// First reconcile adds finalizer
+	_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: cardName, Namespace: testNamespace},
+	})
+	time.Sleep(100 * time.Millisecond)
+
+	// Simulate a verified signature with SPIFFE ID in JWS protected header
+	simulateJWSSpiffeID(t, ctx, cardName, expectedSpiffeID)
+
+	// Subsequent reconciles evaluate binding (with JWS SPIFFE ID now in status)
+	for i := 0; i < 2; i++ {
 		_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: cardName, Namespace: testNamespace},
 		})
@@ -222,7 +229,7 @@ func testNonMatchingBindingEvaluation(t *testing.T) {
 	service := createTestService(t, ctx, agentName)
 	defer deleteResource(ctx, service)
 
-	// Create AgentCard with NON-matching SPIFFE ID
+	// Create AgentCard with NON-matching SPIFFE ID in allowlist
 	wrongSpiffeID := fmt.Sprintf("spiffe://%s/ns/other/sa/other-sa", trustDomain)
 	agentCard := createTestAgentCard(t, ctx, cardName, agentName, []agentv1alpha1.SpiffeID{agentv1alpha1.SpiffeID(wrongSpiffeID)}, false)
 	defer deleteResource(ctx, agentCard)
@@ -232,13 +239,19 @@ func testNonMatchingBindingEvaluation(t *testing.T) {
 		Client:       k8sClient,
 		Scheme:       scheme,
 		AgentFetcher: &mockFetcher{},
-		TrustDomain:  trustDomain,
 	}
 
-	// Reconcile twice
+	// First reconcile adds finalizer
 	reconciler.Reconcile(ctx, reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: cardName, Namespace: testNamespace},
 	})
+	time.Sleep(100 * time.Millisecond)
+
+	// Simulate JWS SPIFFE ID that does NOT match the allowlist
+	actualSpiffeID := fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", trustDomain, testNamespace, saName)
+	simulateJWSSpiffeID(t, ctx, cardName, actualSpiffeID)
+
+	// Reconcile again to evaluate binding
 	reconciler.Reconcile(ctx, reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: cardName, Namespace: testNamespace},
 	})
@@ -293,7 +306,6 @@ func testStrictBindingEnforcement(t *testing.T) {
 		Client:       k8sClient,
 		Scheme:       scheme,
 		AgentFetcher: &mockFetcher{},
-		TrustDomain:  trustDomain,
 	}
 
 	// Reconcile multiple times to ensure binding is evaluated
@@ -412,11 +424,19 @@ func testBindingRestoration(t *testing.T) {
 		Client:       k8sClient,
 		Scheme:       scheme,
 		AgentFetcher: &mockFetcher{},
-		TrustDomain:  trustDomain,
 	}
 
-	// Reconcile multiple times
-	for i := 0; i < 3; i++ {
+	// First reconcile adds finalizer
+	cardReconciler.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: cardName, Namespace: testNamespace},
+	})
+	time.Sleep(100 * time.Millisecond)
+
+	// Simulate a verified signature with matching SPIFFE ID in JWS header
+	simulateJWSSpiffeID(t, ctx, cardName, expectedSpiffeID)
+
+	// Subsequent reconciles evaluate binding
+	for i := 0; i < 2; i++ {
 		cardReconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: cardName, Namespace: testNamespace},
 		})
@@ -588,7 +608,6 @@ func createTestAgentCard(t *testing.T, ctx context.Context, name, agentName stri
 				},
 			},
 			IdentityBinding: &agentv1alpha1.IdentityBinding{
-				TrustDomain:      trustDomain,
 				AllowedSpiffeIDs: allowedIDs,
 				Strict:           strict,
 			},
@@ -633,6 +652,24 @@ func createTestDeployment(t *testing.T, ctx context.Context, name string, replic
 
 	t.Logf("  Created Deployment: %s (replicas=%d)", name, replicas)
 	return deployment
+}
+
+// simulateJWSSpiffeID pre-sets the AgentCard status to simulate a verified signature
+// with a SPIFFE ID in the JWS protected header. This is needed because the integration
+// tests don't perform actual signing — the SPIFFE ID now comes exclusively from the
+// JWS protected header (no fallback paths).
+func simulateJWSSpiffeID(t *testing.T, ctx context.Context, cardName, spiffeID string) {
+	card := &agentv1alpha1.AgentCard{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: cardName, Namespace: testNamespace}, card); err != nil {
+		t.Fatalf("Failed to get AgentCard for SPIFFE ID simulation: %v", err)
+	}
+	validSig := true
+	card.Status.ValidSignature = &validSig
+	card.Status.SignatureSpiffeID = spiffeID
+	if err := k8sClient.Status().Update(ctx, card); err != nil {
+		t.Fatalf("Failed to simulate JWS SPIFFE ID: %v", err)
+	}
+	t.Logf("  Simulated JWS SPIFFE ID: %s", spiffeID)
 }
 
 func deleteResource(ctx context.Context, obj client.Object) {

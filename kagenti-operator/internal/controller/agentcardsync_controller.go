@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -38,6 +39,15 @@ var (
 	syncLogger = ctrl.Log.WithName("controller").WithName("AgentCardSync")
 )
 
+// DefaultAutoSyncGracePeriod is the delay before auto-creating an AgentCard for a
+// newly created workload. This prevents duplicate cards when a Deployment and an
+// AgentCard are applied together (e.g. in the same kubectl apply) — the Deployment
+// event can trigger auto-sync before the manually-created card appears in the cache.
+//
+// TODO: Remove when Deployment/StatefulSet auto-sync is dropped in favour of
+// explicit targetRef-based AgentCard creation.
+const DefaultAutoSyncGracePeriod = 5 * time.Second
+
 // AgentCardSyncReconciler automatically creates AgentCard resources for agent workloads
 // (Deployments, StatefulSets, and legacy Agent CRDs)
 type AgentCardSyncReconciler struct {
@@ -45,6 +55,21 @@ type AgentCardSyncReconciler struct {
 	Scheme *runtime.Scheme
 	// EnableLegacyAgentCRD enables watching legacy Agent CRD resources
 	EnableLegacyAgentCRD bool
+	// AutoSyncGracePeriod is the delay before auto-creating an AgentCard for newly
+	// created workloads. Set to 0 in tests to disable. Defaults to DefaultAutoSyncGracePeriod.
+	AutoSyncGracePeriod time.Duration
+}
+
+// getAutoSyncGracePeriod returns the configured grace period, defaulting to DefaultAutoSyncGracePeriod.
+func (r *AgentCardSyncReconciler) getAutoSyncGracePeriod() time.Duration {
+	if r.AutoSyncGracePeriod > 0 {
+		return r.AutoSyncGracePeriod
+	}
+	if r.AutoSyncGracePeriod < 0 {
+		// Explicitly set to negative = disabled (e.g., tests)
+		return 0
+	}
+	return DefaultAutoSyncGracePeriod
 }
 
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agents,verbs=get;list;watch
@@ -67,6 +92,14 @@ func (r *AgentCardSyncReconciler) ReconcileDeployment(ctx context.Context, req c
 
 	// Check if this is an agent deployment
 	if !r.shouldSyncWorkload(deployment.Labels) {
+		return ctrl.Result{}, nil
+	}
+
+	// Skip Deployments owned by the legacy Agent CRD — the Agent reconciler handles those.
+	// This prevents duplicate AgentCards (one from Agent path, one from Deployment path).
+	if isOwnedByAgentCRD(deployment) {
+		syncLogger.V(1).Info("Skipping Deployment owned by Agent CRD",
+			"deployment", deployment.Name, "namespace", deployment.Namespace)
 		return ctrl.Result{}, nil
 	}
 
@@ -273,8 +306,85 @@ func (r *AgentCardSyncReconciler) ensureAgentCard(ctx context.Context, obj clien
 		return ctrl.Result{}, err
 	}
 
+	// Before creating, check if another AgentCard already targets this workload.
+	// This prevents duplicates when a user manually creates an AgentCard with a custom name
+	// (e.g. "weather-card") that targets the same Deployment/StatefulSet.
+	if existingCard, found := r.findExistingCardForWorkload(ctx, obj, gvk); found {
+		syncLogger.Info("Skipping auto-creation: another AgentCard already targets this workload",
+			"existingCard", existingCard,
+			"workload", obj.GetName(),
+			"kind", gvk.Kind)
+		return ctrl.Result{}, nil
+	}
+
+	// Grace period for newly created workloads: when a Deployment and an AgentCard are
+	// applied together (e.g. in the same kubectl apply), the Deployment event can trigger
+	// the sync reconciler before the manually-created AgentCard appears in the informer
+	// cache. Requeue once so the duplicate check above can catch it on the next pass.
+	gracePeriod := r.getAutoSyncGracePeriod()
+	if gracePeriod > 0 && time.Since(obj.GetCreationTimestamp().Time) < gracePeriod {
+		syncLogger.V(1).Info("Workload recently created, requeueing before auto-creating AgentCard",
+			"workload", obj.GetName(), "kind", gvk.Kind,
+			"age", time.Since(obj.GetCreationTimestamp().Time).Round(time.Millisecond))
+		return ctrl.Result{RequeueAfter: gracePeriod}, nil
+	}
+
 	// Create new AgentCard with targetRef
 	return r.createAgentCardForWorkload(ctx, obj, gvk, cardName)
+}
+
+// findExistingCardForWorkload checks if any AgentCard in the namespace already targets
+// the given workload — either via targetRef or via selector labels. Returns the card
+// name and true if found. This prevents auto-sync from creating duplicate cards when a
+// user has manually created an AgentCard with a custom name.
+func (r *AgentCardSyncReconciler) findExistingCardForWorkload(ctx context.Context, obj client.Object, gvk schema.GroupVersionKind) (string, bool) {
+	cardList := &agentv1alpha1.AgentCardList{}
+	if err := r.List(ctx, cardList, client.InNamespace(obj.GetNamespace())); err != nil {
+		syncLogger.Error(err, "Failed to list AgentCards for duplicate check")
+		return "", false
+	}
+
+	expectedAPIVersion := gvk.GroupVersion().String()
+	workloadLabels := obj.GetLabels()
+
+	for i := range cardList.Items {
+		card := &cardList.Items[i]
+
+		// Check targetRef match
+		if card.Spec.TargetRef != nil &&
+			card.Spec.TargetRef.APIVersion == expectedAPIVersion &&
+			card.Spec.TargetRef.Kind == gvk.Kind &&
+			card.Spec.TargetRef.Name == obj.GetName() {
+			return card.Name, true
+		}
+
+		// Check selector match — the card's selector labels must be a subset of the workload labels
+		if card.Spec.Selector != nil && len(card.Spec.Selector.MatchLabels) > 0 {
+			allMatch := true
+			for k, v := range card.Spec.Selector.MatchLabels {
+				if workloadLabels[k] != v {
+					allMatch = false
+					break
+				}
+			}
+			if allMatch {
+				return card.Name, true
+			}
+		}
+	}
+	return "", false
+}
+
+// isOwnedByAgentCRD checks if an object (Deployment/StatefulSet) is owned by the
+// legacy Agent CRD. Returns true if any owner reference has kind=Agent in the
+// kagenti API group.
+func isOwnedByAgentCRD(obj client.Object) bool {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.Kind == "Agent" && ref.APIVersion == agentv1alpha1.GroupVersion.String() {
+			return true
+		}
+	}
+	return false
 }
 
 // createAgentCardForWorkload creates a new AgentCard for a workload using targetRef

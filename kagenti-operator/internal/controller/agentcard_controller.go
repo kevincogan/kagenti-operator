@@ -46,6 +46,7 @@ import (
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"github.com/kagenti/operator/internal/agentcard"
+	"github.com/kagenti/operator/internal/signature"
 )
 
 const (
@@ -57,29 +58,26 @@ const (
 	// Label values
 	LabelValueAgent = "agent"
 
+	// LabelSignatureVerified indicates if an agent's signature has been verified.
+	// Used by NetworkPolicy rules to allow traffic between verified agents.
+	LabelSignatureVerified = "agent.kagenti.dev/signature-verified"
+
 	// Finalizer
 	AgentCardFinalizer = "agentcard.kagenti.dev/finalizer"
 
 	// Default sync period
 	DefaultSyncPeriod = 30 * time.Second
 
-	// Default trust domain for SPIFFE IDs
-	DefaultTrustDomain = "cluster.local"
-
-	// Annotation keys for binding enforcement
-	AnnotationDisabledBy     = "kagenti.io/disabled-by"
-	AnnotationDisabledReason = "kagenti.io/disabled-reason"
-
-	// Annotation values
-	DisabledByIdentityBinding = "identity-binding"
-
 	// Binding status reasons
 	ReasonBound                 = "Bound"
 	ReasonNotBound              = "NotBound"
 	ReasonAgentNotFound         = "AgentNotFound"
 	ReasonMultipleAgentsMatched = "MultipleAgentsMatched"
-	ReasonNoTrustDomain         = "NoTrustDomain"
-	ReasonNoIdentityConfig      = "NoIdentityConfig"
+
+	// Signature verification reasons
+	ReasonSignatureValid        = "SignatureValid"
+	ReasonSignatureInvalid      = "SignatureInvalid"
+	ReasonSignatureInvalidAudit = "SignatureInvalidAudit"
 )
 
 var (
@@ -109,8 +107,12 @@ type AgentCardReconciler struct {
 	Scheme               *runtime.Scheme
 	AgentFetcher         agentcard.Fetcher
 	Recorder             record.EventRecorder
-	TrustDomain          string
 	EnableLegacyAgentCRD bool
+
+	// Signature verification
+	SignatureProvider  signature.Provider
+	RequireSignature   bool
+	SignatureAuditMode bool
 }
 
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agentcards,verbs=get;list;watch;create;update;patch;delete
@@ -118,8 +120,9 @@ type AgentCardReconciler struct {
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agentcards/finalizers,verbs=update
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agents,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
-// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 
 func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	agentCardLogger.Info("Reconciling AgentCard", "namespacedName", req.NamespacedName)
@@ -175,19 +178,11 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// If identity binding is configured, update binding status
 		if agentCard.Spec.IdentityBinding != nil {
 			r.updateBindingStatus(ctx, agentCard, false, reason, message, "")
-			// Emit event for visibility
 			if r.Recorder != nil {
 				r.Recorder.Event(agentCard, corev1.EventTypeWarning, reason, message)
 			}
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
-	}
-
-	// Evaluate identity binding BEFORE fetching the card (uses only K8s metadata)
-	if agentCard.Spec.IdentityBinding != nil {
-		if err := r.evaluateBinding(ctx, agentCard, workload); err != nil {
-			agentCardLogger.Error(err, "Failed to evaluate binding", "agentCard", agentCard.Name)
-		}
 	}
 
 	// Check if workload is ready
@@ -227,16 +222,45 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}
 
+	// Verify signature before mutating card data (URL override etc.).
+	var verificationResult *signature.VerificationResult
+	if r.RequireSignature {
+		var verifyErr error
+		verificationResult, verifyErr = r.verifySignature(ctx, cardData)
+
+		if verifyErr != nil {
+			agentCardLogger.Error(verifyErr, "Signature verification error", "workload", workload.Name)
+		}
+
+		// Emit events for signature verification results
+		if verificationResult != nil {
+			if verificationResult.Verified {
+				if r.Recorder != nil {
+					r.Recorder.Event(agentCard, corev1.EventTypeNormal, "SignatureEvaluated",
+						fmt.Sprintf("Signature verified successfully (keyID=%s)", verificationResult.KeyID))
+				}
+			} else {
+				reason := ReasonSignatureInvalid
+				if r.SignatureAuditMode {
+					reason = ReasonSignatureInvalidAudit
+				}
+				agentCardLogger.Info("Signature verification failed",
+					"workload", workload.Name,
+					"reason", reason,
+					"details", verificationResult.Details)
+				if r.Recorder != nil {
+					r.Recorder.Event(agentCard, corev1.EventTypeWarning, "SignatureFailed", verificationResult.Details)
+				}
+			}
+		}
+	}
+
 	// Override the URL with the actual in-cluster Service URL.
-	// Agents may advertise URLs like 0.0.0.0:8000, which are only valid from
-	// within the agent Pod itself and are not usable for cluster communication.
-	// Using the Service URL ensures other components can reliably reach the agent.
 	cardData.URL = serviceURL
 
 	// Compute card_id for drift detection (optional)
 	cardId := r.computeCardId(cardData)
 	if cardId != "" && agentCard.Status.CardId != "" && agentCard.Status.CardId != cardId {
-		// Card content has changed - emit event
 		if r.Recorder != nil {
 			r.Recorder.Event(agentCard, corev1.EventTypeWarning, "CardContentChanged",
 				fmt.Sprintf("Agent card content changed: previous=%s, current=%s", agentCard.Status.CardId, cardId))
@@ -251,10 +275,51 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		Name:       workload.Name,
 	}
 
-	// Update the AgentCard status with the fetched card
-	if err := r.updateAgentCardStatus(ctx, agentCard, cardData, protocol, cardId, resolvedTargetRef); err != nil {
+	// Compute binding before the status write so everything is persisted in one API call.
+	var bindingPassed bool
+	var binding *bindingResult
+	var identityMatch *bool
+	sigVerified := verificationResult != nil && verificationResult.Verified
+	if agentCard.Spec.IdentityBinding != nil {
+		var verifiedSpiffeID string
+		if verificationResult != nil && verificationResult.Verified && verificationResult.SpiffeID != "" {
+			verifiedSpiffeID = verificationResult.SpiffeID
+		}
+		binding = r.computeBinding(agentCard, verifiedSpiffeID)
+		bindingPassed = binding != nil && binding.Bound
+		match := sigVerified && bindingPassed
+		identityMatch = &match
+	}
+
+	// Persist all status fields in one write.
+	var vr *signature.VerificationResult
+	if r.RequireSignature {
+		vr = verificationResult
+	}
+	if err := r.updateAgentCardStatus(ctx, agentCard, cardData, protocol, cardId, resolvedTargetRef, vr, binding, identityMatch); err != nil {
 		agentCardLogger.Error(err, "Failed to update AgentCard status")
 		return ctrl.Result{}, err
+	}
+
+	// Propagate the signature-verified label to the workload's pod template.
+	// If identity binding is configured, both signature and binding must pass.
+	if r.RequireSignature {
+		isVerified := sigVerified
+		if agentCard.Spec.IdentityBinding != nil {
+			isVerified = isVerified && bindingPassed
+		}
+		if err := r.propagateSignatureLabel(ctx, workload, isVerified); err != nil {
+			agentCardLogger.Error(err, "Failed to propagate signature label to workload",
+				"workload", workload.Name, "verified", isVerified)
+		}
+
+		// Reject if verification failed and not in audit mode
+		if verificationResult != nil && !verificationResult.Verified && !r.SignatureAuditMode {
+			agentCardLogger.Info("Signature verification failed, rejecting agent card",
+				"workload", workload.Name,
+				"details", verificationResult.Details)
+			return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
+		}
 	}
 
 	// Calculate next sync time based on syncPeriod
@@ -607,8 +672,9 @@ func (r *AgentCardReconciler) getSyncPeriod(agentCard *agentv1alpha1.AgentCard) 
 	return duration
 }
 
-// updateAgentCardStatus updates the AgentCard status with the fetched agent card
-func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCard *agentv1alpha1.AgentCard, cardData *agentv1alpha1.AgentCardData, protocol, cardId string, targetRef *agentv1alpha1.TargetRef) error {
+// updateAgentCardStatus persists all status fields in a single write.
+// binding and identityMatch are nil when identity binding is not configured.
+func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCard *agentv1alpha1.AgentCard, cardData *agentv1alpha1.AgentCardData, protocol, cardId string, targetRef *agentv1alpha1.TargetRef, verificationResult *signature.VerificationResult, binding *bindingResult, identityMatch *bool) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Fetch the latest version
 		latest := &agentv1alpha1.AgentCard{}
@@ -628,14 +694,62 @@ func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCa
 			latest.Status.CardId = cardId
 		}
 
-		// Update conditions
-		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
-			Type:               "Synced",
-			Status:             metav1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "SyncSucceeded",
-			Message:            fmt.Sprintf("Successfully fetched agent card for %s", cardData.Name),
-		})
+		// Update signature verification fields if present
+		if verificationResult != nil {
+			latest.Status.ValidSignature = &verificationResult.Verified
+			latest.Status.SignatureVerificationDetails = verificationResult.Details
+			latest.Status.SignatureKeyID = verificationResult.KeyID
+			// Only trust the SPIFFE ID when the signature is cryptographically valid.
+			if verificationResult.Verified {
+				latest.Status.SignatureSpiffeID = verificationResult.SpiffeID
+			} else {
+				latest.Status.SignatureSpiffeID = ""
+			}
+
+			// Add SignatureVerified condition
+			sigCondition := metav1.Condition{
+				Type:               "SignatureVerified",
+				LastTransitionTime: metav1.Now(),
+			}
+			if verificationResult.Verified {
+				sigCondition.Status = metav1.ConditionTrue
+				sigCondition.Reason = ReasonSignatureValid
+				sigCondition.Message = verificationResult.Details
+			} else {
+				sigCondition.Status = metav1.ConditionFalse
+				if r.SignatureAuditMode {
+					sigCondition.Reason = ReasonSignatureInvalidAudit
+					sigCondition.Message = verificationResult.Details + " (audit mode: allowed)"
+				} else {
+					sigCondition.Reason = ReasonSignatureInvalid
+					sigCondition.Message = verificationResult.Details
+				}
+			}
+			meta.SetStatusCondition(&latest.Status.Conditions, sigCondition)
+		}
+
+		// Update Synced condition based on verification result
+		if verificationResult != nil && !verificationResult.Verified && !r.SignatureAuditMode {
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:               "Synced",
+				Status:             metav1.ConditionFalse,
+				LastTransitionTime: metav1.Now(),
+				Reason:             ReasonSignatureInvalid,
+				Message:            verificationResult.Details,
+			})
+		} else {
+			message := fmt.Sprintf("Successfully fetched agent card for %s", cardData.Name)
+			if verificationResult != nil && !verificationResult.Verified && r.SignatureAuditMode {
+				message = fmt.Sprintf("Fetched agent card for %s (signature verification failed but audit mode enabled)", cardData.Name)
+			}
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:               "Synced",
+				Status:             metav1.ConditionTrue,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "SyncSucceeded",
+				Message:            message,
+			})
+		}
 
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
@@ -645,8 +759,135 @@ func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCa
 			Message:            "Agent index is ready for queries",
 		})
 
+		// Write binding status if computed
+		if binding != nil {
+			now := metav1.Now()
+			latest.Status.BindingStatus = &agentv1alpha1.BindingStatus{
+				Bound:              binding.Bound,
+				Reason:             binding.Reason,
+				Message:            binding.Message,
+				LastEvaluationTime: &now,
+			}
+			if binding.SpiffeID != "" {
+				latest.Status.ExpectedSpiffeID = binding.SpiffeID
+			}
+			conditionStatus := metav1.ConditionFalse
+			if binding.Bound {
+				conditionStatus = metav1.ConditionTrue
+			}
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:               "Bound",
+				Status:             conditionStatus,
+				LastTransitionTime: now,
+				Reason:             binding.Reason,
+				Message:            binding.Message,
+			})
+		}
+
+		// Always write signatureIdentityMatch — nil clears stale value when IdentityBinding is removed
+		latest.Status.SignatureIdentityMatch = identityMatch
+
 		return r.Status().Update(ctx, latest)
 	})
+}
+
+// verifySignature verifies the JWS signatures on an agent card per A2A spec section 8.4.
+func (r *AgentCardReconciler) verifySignature(ctx context.Context, cardData *agentv1alpha1.AgentCardData) (*signature.VerificationResult, error) {
+	startTime := time.Now()
+	defer func() {
+		duration := time.Since(startTime).Seconds()
+		signature.SignatureVerificationDuration.WithLabelValues(r.SignatureProvider.Name()).Observe(duration)
+	}()
+
+	result, err := r.SignatureProvider.VerifySignature(ctx, cardData, cardData.Signatures)
+
+	// Ensure result is never nil
+	if result == nil {
+		result = &signature.VerificationResult{
+			Verified: false,
+			Details:  "Verification returned null result",
+		}
+	}
+
+	// Record metrics
+	signature.RecordVerification(r.SignatureProvider.Name(), result.Verified, r.SignatureAuditMode)
+	if err != nil {
+		signature.RecordError(r.SignatureProvider.Name(), "verification_error")
+	}
+
+	return result, err
+}
+
+// propagateSignatureLabel adds or removes the signature-verified label on the
+// workload's pod template, enabling NetworkPolicy-based traffic control.
+func (r *AgentCardReconciler) propagateSignatureLabel(ctx context.Context, workload *WorkloadInfo, verified bool) error {
+	if workload == nil {
+		return nil
+	}
+
+	key := types.NamespacedName{Name: workload.Name, Namespace: workload.Namespace}
+
+	switch workload.Kind {
+	case "Deployment":
+		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			deployment := &appsv1.Deployment{}
+			if err := r.Get(ctx, key, deployment); err != nil {
+				return err
+			}
+			if deployment.Spec.Template.Labels == nil {
+				deployment.Spec.Template.Labels = make(map[string]string)
+			}
+			current := deployment.Spec.Template.Labels[LabelSignatureVerified]
+			// No change needed — avoid unnecessary rollout
+			if verified && current == "true" {
+				return nil
+			}
+			if !verified && current == "" {
+				return nil
+			}
+			if verified {
+				deployment.Spec.Template.Labels[LabelSignatureVerified] = "true"
+			} else {
+				delete(deployment.Spec.Template.Labels, LabelSignatureVerified)
+			}
+			agentCardLogger.Info("Propagating signature-verified label to Deployment pod template",
+				"deployment", workload.Name,
+				"verified", verified)
+			return r.Update(ctx, deployment)
+		})
+
+	case "StatefulSet":
+		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			statefulSet := &appsv1.StatefulSet{}
+			if err := r.Get(ctx, key, statefulSet); err != nil {
+				return err
+			}
+			if statefulSet.Spec.Template.Labels == nil {
+				statefulSet.Spec.Template.Labels = make(map[string]string)
+			}
+			current := statefulSet.Spec.Template.Labels[LabelSignatureVerified]
+			if verified && current == "true" {
+				return nil
+			}
+			if !verified && current == "" {
+				return nil
+			}
+			if verified {
+				statefulSet.Spec.Template.Labels[LabelSignatureVerified] = "true"
+			} else {
+				delete(statefulSet.Spec.Template.Labels, LabelSignatureVerified)
+			}
+			agentCardLogger.Info("Propagating signature-verified label to StatefulSet pod template",
+				"statefulSet", workload.Name,
+				"verified", verified)
+			return r.Update(ctx, statefulSet)
+		})
+
+	default:
+		agentCardLogger.V(1).Info("Cannot propagate signature label to unsupported workload kind",
+			"kind", workload.Kind, "workload", workload.Name)
+		return nil
+	}
 }
 
 // updateCondition updates a specific condition
@@ -839,79 +1080,67 @@ func agentLabelPredicate() predicate.Predicate {
 	})
 }
 
-// evaluateBinding evaluates identity binding using Kubernetes metadata only
-// Works with WorkloadInfo to support any workload type (Deployment, StatefulSet, Agent CRD)
-func (r *AgentCardReconciler) evaluateBinding(ctx context.Context, agentCard *agentv1alpha1.AgentCard, workload *WorkloadInfo) error {
+// bindingResult holds the computed identity binding state (pure logic, no API call).
+type bindingResult struct {
+	Bound    bool
+	Reason   string
+	Message  string
+	SpiffeID string // the verified SPIFFE ID used for the evaluation
+}
+
+// computeBinding evaluates identity binding without writing status.
+// verifiedSpiffeID is the cryptographically verified SPIFFE ID from the JWS
+// protected header; it is empty when the signature is invalid or unsigned.
+// Binding fails if verifiedSpiffeID is empty — there is no fallback path.
+func (r *AgentCardReconciler) computeBinding(agentCard *agentv1alpha1.AgentCard, verifiedSpiffeID string) *bindingResult {
 	binding := agentCard.Spec.IdentityBinding
 	if binding == nil {
 		return nil
 	}
 
-	// Determine expected SPIFFE ID
-	var expectedSpiffeID string
-
-	// Use explicit expectedSpiffeID if provided (supports custom SPIRE configurations)
-	if binding.ExpectedSpiffeID != "" {
-		expectedSpiffeID = string(binding.ExpectedSpiffeID)
-		agentCardLogger.V(1).Info("Using explicit expectedSpiffeID from spec", "expectedSpiffeID", expectedSpiffeID)
-	} else {
-		// Derive from Kubernetes metadata (standard SPIRE Helm operator pattern)
-		// See: https://github.com/spiffe/spire/blob/main/doc/plugin_agent_workloadattestor_k8s.md
-
-		// Determine trust domain
-		trustDomain := binding.TrustDomain
-		if trustDomain == "" {
-			trustDomain = r.TrustDomain
+	// No cryptographically-bound SPIFFE ID available — binding cannot proceed.
+	if verifiedSpiffeID == "" {
+		reason := ReasonNotBound
+		message := "No SPIFFE ID in JWS protected header: sign the card with --spiffe-id to embed the workload identity"
+		agentCardLogger.Info("Identity binding failed: no SPIFFE ID in JWS protected header",
+			"agentCard", agentCard.Name,
+			"hint", "Use --spiffe-id when signing to embed the SPIFFE ID in the JWS protected header")
+		if r.Recorder != nil {
+			r.Recorder.Event(agentCard, corev1.EventTypeWarning, "BindingFailed", message)
 		}
-		if trustDomain == "" {
-			trustDomain = DefaultTrustDomain
-		}
-
-		// Get service account from the workload
-		serviceAccount, err := r.getWorkloadServiceAccount(ctx, workload)
-		if err != nil {
-			agentCardLogger.Error(err, "Failed to get service account for workload", "workload", workload.Name)
-			serviceAccount = workload.Name + "-sa" // fallback
-		}
-
-		// Convention: spiffe://<trust-domain>/ns/<namespace>/sa/<serviceAccount>
-		expectedSpiffeID = fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", trustDomain, workload.Namespace, serviceAccount)
+		return &bindingResult{Bound: false, Reason: reason, Message: message}
 	}
 
-	// Check if expected SPIFFE ID is in the allowlist
+	agentCardLogger.V(1).Info("Using SPIFFE ID from JWS protected header for binding",
+		"spiffeID", verifiedSpiffeID)
+
+	// Check if verified SPIFFE ID is in the allowlist
 	bound := false
 	for _, allowedID := range binding.AllowedSpiffeIDs {
-		if string(allowedID) == expectedSpiffeID {
+		if string(allowedID) == verifiedSpiffeID {
 			bound = true
 			break
 		}
 	}
 
-	// Warn if expectedSpiffeID doesn't match any allowedSpiffeID (likely config error)
-	if !bound && r.Recorder != nil {
-		// Log at higher verbosity to help users debug misconfigurations
-		agentCardLogger.Info("SPIFFE ID mismatch - verify your SPIRE configuration matches allowedSpiffeIDs",
-			"expectedSpiffeID", expectedSpiffeID,
+	if !bound {
+		agentCardLogger.Info("SPIFFE ID mismatch",
+			"verifiedSpiffeID", verifiedSpiffeID,
 			"allowedSpiffeIDs", binding.AllowedSpiffeIDs,
-			"hint", "If using custom SPIRE identity patterns, set spec.identityBinding.expectedSpiffeID explicitly")
+			"hint", "Ensure the spiffe_id in the JWS protected header matches an entry in allowedSpiffeIDs")
 	}
 
 	// Determine reason and message
 	var reason, message string
 	if bound {
 		reason = ReasonBound
-		message = fmt.Sprintf("Expected SPIFFE ID %s is in the allowlist", expectedSpiffeID)
+		message = fmt.Sprintf("SPIFFE ID %s (source: jws-protected-header) is in the allowlist", verifiedSpiffeID)
 	} else {
 		reason = ReasonNotBound
-		message = fmt.Sprintf("Expected SPIFFE ID %s is not in the allowlist", expectedSpiffeID)
+		message = fmt.Sprintf("SPIFFE ID %s (source: jws-protected-header) is not in the allowlist", verifiedSpiffeID)
 	}
 
-	// Update binding status
-	if err := r.updateBindingStatus(ctx, agentCard, bound, reason, message, expectedSpiffeID); err != nil {
-		return err
-	}
-
-	// Emit events
+	// Emit events for immediate kubectl visibility
 	if r.Recorder != nil {
 		if bound {
 			r.Recorder.Event(agentCard, corev1.EventTypeNormal, "BindingEvaluated", message)
@@ -920,50 +1149,11 @@ func (r *AgentCardReconciler) evaluateBinding(ctx context.Context, agentCard *ag
 		}
 	}
 
-	return nil
+	return &bindingResult{Bound: bound, Reason: reason, Message: message, SpiffeID: verifiedSpiffeID}
 }
 
-// getWorkloadServiceAccount returns the service account name for a workload
-func (r *AgentCardReconciler) getWorkloadServiceAccount(ctx context.Context, workload *WorkloadInfo) (string, error) {
-	switch workload.Kind {
-	case "Agent":
-		// For Agent CRD, get the Agent and check its PodTemplateSpec
-		agent := &agentv1alpha1.Agent{}
-		if err := r.Get(ctx, types.NamespacedName{Name: workload.Name, Namespace: workload.Namespace}, agent); err != nil {
-			return "", err
-		}
-		if agent.Spec.PodTemplateSpec != nil && agent.Spec.PodTemplateSpec.Spec.ServiceAccountName != "" {
-			return agent.Spec.PodTemplateSpec.Spec.ServiceAccountName, nil
-		}
-		return agent.Name + "-sa", nil
-
-	case "Deployment":
-		deployment := &appsv1.Deployment{}
-		if err := r.Get(ctx, types.NamespacedName{Name: workload.Name, Namespace: workload.Namespace}, deployment); err != nil {
-			return "", err
-		}
-		if deployment.Spec.Template.Spec.ServiceAccountName != "" {
-			return deployment.Spec.Template.Spec.ServiceAccountName, nil
-		}
-		return "default", nil
-
-	case "StatefulSet":
-		statefulset := &appsv1.StatefulSet{}
-		if err := r.Get(ctx, types.NamespacedName{Name: workload.Name, Namespace: workload.Namespace}, statefulset); err != nil {
-			return "", err
-		}
-		if statefulset.Spec.Template.Spec.ServiceAccountName != "" {
-			return statefulset.Spec.Template.Spec.ServiceAccountName, nil
-		}
-		return "default", nil
-
-	default:
-		// For unknown types, try to get from unstructured
-		return workload.Name + "-sa", nil
-	}
-}
-
-// updateBindingStatus updates the binding status in the AgentCard
+// updateBindingStatus updates binding status when the main status write is unreachable
+// (e.g. getWorkload fails before card data is available).
 func (r *AgentCardReconciler) updateBindingStatus(ctx context.Context, agentCard *agentv1alpha1.AgentCard, bound bool, reason, message, expectedSpiffeID string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &agentv1alpha1.AgentCard{}
@@ -985,7 +1175,6 @@ func (r *AgentCardReconciler) updateBindingStatus(ctx context.Context, agentCard
 			latest.Status.ExpectedSpiffeID = expectedSpiffeID
 		}
 
-		// Update the Bound condition
 		conditionStatus := metav1.ConditionFalse
 		if bound {
 			conditionStatus = metav1.ConditionTrue
@@ -1007,7 +1196,7 @@ func (r *AgentCardReconciler) computeCardId(cardData *agentv1alpha1.AgentCardDat
 	if cardData == nil {
 		return ""
 	}
-	// Use JSON serialization for simplicity (JCS would be ideal but adds complexity)
+	// JSON serialization is sufficient — hash is only compared within this operator
 	data, err := json.Marshal(cardData)
 	if err != nil {
 		agentCardLogger.Error(err, "Failed to marshal card data for hash computation")
@@ -1022,6 +1211,15 @@ func (r *AgentCardReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Initialize the fetcher if not set
 	if r.AgentFetcher == nil {
 		r.AgentFetcher = agentcard.NewFetcher()
+	}
+
+	// Initialize the signature provider if not set
+	if r.SignatureProvider == nil {
+		r.SignatureProvider = signature.NewNoOpProvider()
+	}
+	// Inject the Kubernetes client into providers that need it
+	if secretProvider, ok := r.SignatureProvider.(*signature.SecretProvider); ok {
+		secretProvider.SetClient(mgr.GetClient())
 	}
 
 	controllerBuilder := ctrl.NewControllerManagedBy(mgr).
