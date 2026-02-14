@@ -82,25 +82,18 @@ func (v *AgentCardValidator) ValidateDelete(ctx context.Context, obj runtime.Obj
 func (v *AgentCardValidator) validateAgentCard(agentcard *agentv1alpha1.AgentCard) (admission.Warnings, error) {
 	var warnings admission.Warnings
 
-	// Validate that either targetRef or selector is specified
-	if agentcard.Spec.TargetRef == nil && agentcard.Spec.Selector == nil {
-		return nil, fmt.Errorf("either spec.targetRef or spec.selector must be specified")
+	// spec.targetRef is required — selector is deprecated and no longer processed
+	if agentcard.Spec.TargetRef == nil {
+		return nil, fmt.Errorf("spec.targetRef is required: specify the workload backing this agent (selector is deprecated)")
 	}
 
 	// Field-level validation for targetRef (e.g., non-empty APIVersion/Kind/Name)
 	// is enforced by the CRD schema (minLength constraints), so it is not repeated here.
 
-	// Validate selector if specified
+	// Emit deprecation warning if the removed selector field is still present
 	if agentcard.Spec.Selector != nil {
-		if len(agentcard.Spec.Selector.MatchLabels) == 0 {
-			return nil, fmt.Errorf("spec.selector.matchLabels must not be empty")
-		}
-
-		// Add deprecation warning if only selector is used (no targetRef)
-		if agentcard.Spec.TargetRef == nil {
-			warnings = append(warnings,
-				"spec.selector is deprecated; use spec.targetRef instead for explicit workload references")
-		}
+		warnings = append(warnings,
+			"spec.selector is deprecated and ignored; only spec.targetRef is used")
 	}
 
 	return warnings, nil

@@ -35,7 +35,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
@@ -50,10 +49,10 @@ var _ = Describe("Signature Verification", func() {
 
 	Context("Signed AgentCard — Valid JWS Signature", func() {
 		const (
-			agentName     = "sig-valid-agent"
-			agentCardName = "sig-valid-card"
-			namespace     = "default"
-			secretName    = "sig-valid-keys"
+			deploymentName = "sig-valid-agent"
+			agentCardName  = "sig-valid-card"
+			namespace      = "default"
+			secretName     = "sig-valid-keys"
 		)
 
 		var (
@@ -89,52 +88,14 @@ var _ = Describe("Signature Verification", func() {
 		AfterEach(func() {
 			By("cleaning up test resources")
 			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
-			cleanupResource(ctx, &agentv1alpha1.Agent{}, agentName, namespace)
-			cleanupResource(ctx, &corev1.Service{}, agentName, namespace)
+			cleanupResource(ctx, &appsv1.Deployment{}, deploymentName, namespace)
+			cleanupResource(ctx, &corev1.Service{}, deploymentName, namespace)
 			cleanupResource(ctx, &corev1.Secret{}, secretName, namespace)
 		})
 
 		It("should set validSignature=true and SignatureVerified condition for a correctly signed card", func() {
-			By("creating an Agent")
-			agent := &agentv1alpha1.Agent{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      agentName,
-					Namespace: namespace,
-					Labels: map[string]string{
-						"app.kubernetes.io/name": agentName,
-						LabelAgentType:           LabelValueAgent,
-						LabelAgentProtocol:       "a2a",
-					},
-				},
-				Spec: agentv1alpha1.AgentSpec{
-					PodTemplateSpec: &corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{Name: "agent", Image: "test-image:latest"},
-							},
-						},
-					},
-					ImageSource: agentv1alpha1.ImageSource{Image: ptr.To("test-image:latest")},
-				},
-			}
-			Expect(k8sClient.Create(ctx, agent)).To(Succeed())
-			Eventually(func() error {
-				if err := k8sClient.Get(ctx, types.NamespacedName{Name: agentName, Namespace: namespace}, agent); err != nil {
-					return err
-				}
-				agent.Status.DeploymentStatus = &agentv1alpha1.DeploymentStatus{Phase: agentv1alpha1.PhaseReady}
-				return k8sClient.Status().Update(ctx, agent)
-			}).Should(Succeed())
-
-			By("creating a Service for the Agent")
-			service := &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace},
-				Spec: corev1.ServiceSpec{
-					Ports:    []corev1.ServicePort{{Name: "http", Port: 8000, Protocol: corev1.ProtocolTCP}},
-					Selector: map[string]string{"app.kubernetes.io/name": agentName},
-				},
-			}
-			Expect(k8sClient.Create(ctx, service)).To(Succeed())
+			By("creating Deployment and Service")
+			createDeploymentWithService(ctx, deploymentName, namespace)
 
 			By("creating a signed agent card (JWS format)")
 			cardData := &agentv1alpha1.AgentCardData{
@@ -145,16 +106,15 @@ var _ = Describe("Signature Verification", func() {
 			jwsSig := buildTestJWS(cardData, rsaPrivKey, "my-signing-key", "")
 			cardData.Signatures = []agentv1alpha1.AgentCardSignature{jwsSig}
 
-			By("creating an AgentCard CR")
+			By("creating an AgentCard CR with targetRef")
 			agentCard := &agentv1alpha1.AgentCard{
 				ObjectMeta: metav1.ObjectMeta{Name: agentCardName, Namespace: namespace},
 				Spec: agentv1alpha1.AgentCardSpec{
 					SyncPeriod: "30s",
-					Selector: &agentv1alpha1.AgentSelector{
-						MatchLabels: map[string]string{
-							"app.kubernetes.io/name": agentName,
-							LabelAgentType:           LabelValueAgent,
-						},
+					TargetRef: &agentv1alpha1.TargetRef{
+						APIVersion: "apps/v1",
+						Kind:       "Deployment",
+						Name:       deploymentName,
 					},
 				},
 			}
@@ -219,10 +179,10 @@ var _ = Describe("Signature Verification", func() {
 
 	Context("Unsigned AgentCard — Rejected", func() {
 		const (
-			agentName     = "sig-unsigned-agent"
-			agentCardName = "sig-unsigned-card"
-			namespace     = "default"
-			secretName    = "sig-unsigned-keys"
+			deploymentName = "sig-unsigned-agent"
+			agentCardName  = "sig-unsigned-card"
+			namespace      = "default"
+			secretName     = "sig-unsigned-keys"
 		)
 
 		ctx := context.Background()
@@ -239,24 +199,23 @@ var _ = Describe("Signature Verification", func() {
 
 		AfterEach(func() {
 			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
-			cleanupResource(ctx, &agentv1alpha1.Agent{}, agentName, namespace)
-			cleanupResource(ctx, &corev1.Service{}, agentName, namespace)
+			cleanupResource(ctx, &appsv1.Deployment{}, deploymentName, namespace)
+			cleanupResource(ctx, &corev1.Service{}, deploymentName, namespace)
 			cleanupResource(ctx, &corev1.Secret{}, secretName, namespace)
 		})
 
 		It("should set validSignature=false for an unsigned card", func() {
-			By("creating Agent, Service, and AgentCard")
-			createAgentWithService(ctx, agentName, namespace)
+			By("creating Deployment and Service")
+			createDeploymentWithService(ctx, deploymentName, namespace)
 
 			agentCard := &agentv1alpha1.AgentCard{
 				ObjectMeta: metav1.ObjectMeta{Name: agentCardName, Namespace: namespace},
 				Spec: agentv1alpha1.AgentCardSpec{
 					SyncPeriod: "30s",
-					Selector: &agentv1alpha1.AgentSelector{
-						MatchLabels: map[string]string{
-							"app.kubernetes.io/name": agentName,
-							LabelAgentType:           LabelValueAgent,
-						},
+					TargetRef: &agentv1alpha1.TargetRef{
+						APIVersion: "apps/v1",
+						Kind:       "Deployment",
+						Name:       deploymentName,
 					},
 				},
 			}
@@ -318,18 +277,18 @@ var _ = Describe("Signature Verification", func() {
 
 	Context("Wrong-Key JWS Signature — Rejected", func() {
 		const (
-			agentName     = "sig-wrongkey-agent"
-			agentCardName = "sig-wrongkey-card"
-			namespace     = "default"
-			secretName    = "sig-wrongkey-keys"
+			deploymentName = "sig-wrongkey-agent"
+			agentCardName  = "sig-wrongkey-card"
+			namespace      = "default"
+			secretName     = "sig-wrongkey-keys"
 		)
 
 		ctx := context.Background()
 
 		AfterEach(func() {
 			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
-			cleanupResource(ctx, &agentv1alpha1.Agent{}, agentName, namespace)
-			cleanupResource(ctx, &corev1.Service{}, agentName, namespace)
+			cleanupResource(ctx, &appsv1.Deployment{}, deploymentName, namespace)
+			cleanupResource(ctx, &corev1.Service{}, deploymentName, namespace)
 			cleanupResource(ctx, &corev1.Secret{}, secretName, namespace)
 		})
 
@@ -345,8 +304,8 @@ var _ = Describe("Signature Verification", func() {
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 
-			By("creating Agent, Service, and AgentCard")
-			createAgentWithService(ctx, agentName, namespace)
+			By("creating Deployment and Service")
+			createDeploymentWithService(ctx, deploymentName, namespace)
 
 			cardData := &agentv1alpha1.AgentCardData{
 				Name:    "Wrong Key Agent",
@@ -360,11 +319,10 @@ var _ = Describe("Signature Verification", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: agentCardName, Namespace: namespace},
 				Spec: agentv1alpha1.AgentCardSpec{
 					SyncPeriod: "30s",
-					Selector: &agentv1alpha1.AgentSelector{
-						MatchLabels: map[string]string{
-							"app.kubernetes.io/name": agentName,
-							LabelAgentType:           LabelValueAgent,
-						},
+					TargetRef: &agentv1alpha1.TargetRef{
+						APIVersion: "apps/v1",
+						Kind:       "Deployment",
+						Name:       deploymentName,
 					},
 				},
 			}
@@ -413,18 +371,18 @@ var _ = Describe("Signature Verification", func() {
 
 	Context("Audit Mode — Accept with Warning", func() {
 		const (
-			agentName     = "sig-audit-agent"
-			agentCardName = "sig-audit-card"
-			namespace     = "default"
-			secretName    = "sig-audit-keys"
+			deploymentName = "sig-audit-agent"
+			agentCardName  = "sig-audit-card"
+			namespace      = "default"
+			secretName     = "sig-audit-keys"
 		)
 
 		ctx := context.Background()
 
 		AfterEach(func() {
 			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
-			cleanupResource(ctx, &agentv1alpha1.Agent{}, agentName, namespace)
-			cleanupResource(ctx, &corev1.Service{}, agentName, namespace)
+			cleanupResource(ctx, &appsv1.Deployment{}, deploymentName, namespace)
+			cleanupResource(ctx, &corev1.Service{}, deploymentName, namespace)
 			cleanupResource(ctx, &corev1.Secret{}, secretName, namespace)
 		})
 
@@ -438,8 +396,8 @@ var _ = Describe("Signature Verification", func() {
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 
-			By("creating Agent, Service, and AgentCard")
-			createAgentWithService(ctx, agentName, namespace)
+			By("creating Deployment and Service")
+			createDeploymentWithService(ctx, deploymentName, namespace)
 
 			cardData := &agentv1alpha1.AgentCardData{
 				Name:    "Audit Agent",
@@ -452,11 +410,10 @@ var _ = Describe("Signature Verification", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: agentCardName, Namespace: namespace},
 				Spec: agentv1alpha1.AgentCardSpec{
 					SyncPeriod: "30s",
-					Selector: &agentv1alpha1.AgentSelector{
-						MatchLabels: map[string]string{
-							"app.kubernetes.io/name": agentName,
-							LabelAgentType:           LabelValueAgent,
-						},
+					TargetRef: &agentv1alpha1.TargetRef{
+						APIVersion: "apps/v1",
+						Kind:       "Deployment",
+						Name:       deploymentName,
 					},
 				},
 			}
@@ -512,22 +469,22 @@ var _ = Describe("Signature Verification", func() {
 
 	Context("No Signature Required — Verification Skipped", func() {
 		const (
-			agentName     = "sig-none-agent"
-			agentCardName = "sig-none-card"
-			namespace     = "default"
+			deploymentName = "sig-none-agent"
+			agentCardName  = "sig-none-card"
+			namespace      = "default"
 		)
 
 		ctx := context.Background()
 
 		AfterEach(func() {
 			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
-			cleanupResource(ctx, &agentv1alpha1.Agent{}, agentName, namespace)
-			cleanupResource(ctx, &corev1.Service{}, agentName, namespace)
+			cleanupResource(ctx, &appsv1.Deployment{}, deploymentName, namespace)
+			cleanupResource(ctx, &corev1.Service{}, deploymentName, namespace)
 		})
 
 		It("should sync card without checking signature when RequireSignature=false", func() {
-			By("creating Agent, Service, and AgentCard")
-			createAgentWithService(ctx, agentName, namespace)
+			By("creating Deployment and Service")
+			createDeploymentWithService(ctx, deploymentName, namespace)
 
 			cardData := &agentv1alpha1.AgentCardData{
 				Name:    "No Sig Agent",
@@ -539,11 +496,10 @@ var _ = Describe("Signature Verification", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: agentCardName, Namespace: namespace},
 				Spec: agentv1alpha1.AgentCardSpec{
 					SyncPeriod: "30s",
-					Selector: &agentv1alpha1.AgentSelector{
-						MatchLabels: map[string]string{
-							"app.kubernetes.io/name": agentName,
-							LabelAgentType:           LabelValueAgent,
-						},
+					TargetRef: &agentv1alpha1.TargetRef{
+						APIVersion: "apps/v1",
+						Kind:       "Deployment",
+						Name:       deploymentName,
 					},
 				},
 			}
@@ -579,19 +535,19 @@ var _ = Describe("Signature Verification", func() {
 
 	Context("Signature Identity Match", func() {
 		const (
-			agentName     = "sig-identity-agent"
-			agentCardName = "sig-identity-card"
-			namespace     = "default"
-			secretName    = "sig-identity-keys"
-			trustDomain   = "test.local"
+			deploymentName = "sig-identity-agent"
+			agentCardName  = "sig-identity-card"
+			namespace      = "default"
+			secretName     = "sig-identity-keys"
+			trustDomain    = "test.local"
 		)
 
 		ctx := context.Background()
 
 		AfterEach(func() {
 			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
-			cleanupResource(ctx, &agentv1alpha1.Agent{}, agentName, namespace)
-			cleanupResource(ctx, &corev1.Service{}, agentName, namespace)
+			cleanupResource(ctx, &appsv1.Deployment{}, deploymentName, namespace)
+			cleanupResource(ctx, &corev1.Service{}, deploymentName, namespace)
 			cleanupResource(ctx, &corev1.Secret{}, secretName, namespace)
 		})
 
@@ -606,47 +562,8 @@ var _ = Describe("Signature Verification", func() {
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 
-			By("creating Agent with service account")
-			agent := &agentv1alpha1.Agent{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      agentName,
-					Namespace: namespace,
-					Labels: map[string]string{
-						"app.kubernetes.io/name": agentName,
-						LabelAgentType:           LabelValueAgent,
-						LabelAgentProtocol:       "a2a",
-					},
-				},
-				Spec: agentv1alpha1.AgentSpec{
-					PodTemplateSpec: &corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							ServiceAccountName: "test-sa",
-							Containers: []corev1.Container{
-								{Name: "agent", Image: "test-image:latest"},
-							},
-						},
-					},
-					ImageSource: agentv1alpha1.ImageSource{Image: ptr.To("test-image:latest")},
-				},
-			}
-			Expect(k8sClient.Create(ctx, agent)).To(Succeed())
-			Eventually(func() error {
-				if err := k8sClient.Get(ctx, types.NamespacedName{Name: agentName, Namespace: namespace}, agent); err != nil {
-					return err
-				}
-				agent.Status.DeploymentStatus = &agentv1alpha1.DeploymentStatus{Phase: agentv1alpha1.PhaseReady}
-				return k8sClient.Status().Update(ctx, agent)
-			}).Should(Succeed())
-
-			By("creating a Service")
-			service := &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace},
-				Spec: corev1.ServiceSpec{
-					Ports:    []corev1.ServicePort{{Name: "http", Port: 8000, Protocol: corev1.ProtocolTCP}},
-					Selector: map[string]string{"app.kubernetes.io/name": agentName},
-				},
-			}
-			Expect(k8sClient.Create(ctx, service)).To(Succeed())
+			By("creating Deployment and Service")
+			createDeploymentWithService(ctx, deploymentName, namespace)
 
 			By("creating signed card data with SPIFFE ID in JWS protected header")
 			expectedSpiffeID := "spiffe://" + trustDomain + "/ns/" + namespace + "/sa/test-sa"
@@ -664,11 +581,10 @@ var _ = Describe("Signature Verification", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: agentCardName, Namespace: namespace},
 				Spec: agentv1alpha1.AgentCardSpec{
 					SyncPeriod: "30s",
-					Selector: &agentv1alpha1.AgentSelector{
-						MatchLabels: map[string]string{
-							"app.kubernetes.io/name": agentName,
-							LabelAgentType:           LabelValueAgent,
-						},
+					TargetRef: &agentv1alpha1.TargetRef{
+						APIVersion: "apps/v1",
+						Kind:       "Deployment",
+						Name:       deploymentName,
 					},
 					IdentityBinding: &agentv1alpha1.IdentityBinding{
 						AllowedSpiffeIDs: []agentv1alpha1.SpiffeID{agentv1alpha1.SpiffeID(expectedSpiffeID)},
@@ -1078,44 +994,53 @@ func buildTestJWS(cardData *agentv1alpha1.AgentCardData, privKey *rsa.PrivateKey
 	}
 }
 
-// createAgentWithService creates a minimal Agent and Service for testing.
-func createAgentWithService(ctx context.Context, agentName, namespace string) {
-	agent := &agentv1alpha1.Agent{
+// createDeploymentWithService creates a Deployment (with Available status) and a Service for testing.
+func createDeploymentWithService(ctx context.Context, name, namespace string) {
+	labels := map[string]string{
+		"app":                name,
+		LabelAgentType:       LabelValueAgent,
+		LabelKagentiProtocol: "a2a",
+	}
+	replicas := int32(1)
+	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      agentName,
+			Name:      name,
 			Namespace: namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name": agentName,
-				LabelAgentType:           LabelValueAgent,
-				LabelAgentProtocol:       "a2a",
-			},
+			Labels:    labels,
 		},
-		Spec: agentv1alpha1.AgentSpec{
-			PodTemplateSpec: &corev1.PodTemplateSpec{
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": name}},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{Name: "agent", Image: "test-image:latest"},
 					},
 				},
 			},
-			ImageSource: agentv1alpha1.ImageSource{Image: ptr.To("test-image:latest")},
 		},
 	}
-	ExpectWithOffset(1, k8sClient.Create(ctx, agent)).To(Succeed())
+	ExpectWithOffset(1, k8sClient.Create(ctx, deployment)).To(Succeed())
 
 	Eventually(func() error {
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: agentName, Namespace: namespace}, agent); err != nil {
+		d := &appsv1.Deployment{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, d); err != nil {
 			return err
 		}
-		agent.Status.DeploymentStatus = &agentv1alpha1.DeploymentStatus{Phase: agentv1alpha1.PhaseReady}
-		return k8sClient.Status().Update(ctx, agent)
+		d.Status.Conditions = []appsv1.DeploymentCondition{
+			{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
+		}
+		d.Status.Replicas = 1
+		d.Status.ReadyReplicas = 1
+		return k8sClient.Status().Update(ctx, d)
 	}).Should(Succeed())
 
 	service := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: corev1.ServiceSpec{
 			Ports:    []corev1.ServicePort{{Name: "http", Port: 8000, Protocol: corev1.ProtocolTCP}},
-			Selector: map[string]string{"app.kubernetes.io/name": agentName},
+			Selector: map[string]string{"app": name},
 		},
 	}
 	ExpectWithOffset(1, k8sClient.Create(ctx, service)).To(Succeed())

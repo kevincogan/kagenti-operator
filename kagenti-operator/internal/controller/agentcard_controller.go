@@ -69,10 +69,9 @@ const (
 	DefaultSyncPeriod = 30 * time.Second
 
 	// Binding status reasons
-	ReasonBound                 = "Bound"
-	ReasonNotBound              = "NotBound"
-	ReasonAgentNotFound         = "AgentNotFound"
-	ReasonMultipleAgentsMatched = "MultipleAgentsMatched"
+	ReasonBound         = "Bound"
+	ReasonNotBound      = "NotBound"
+	ReasonAgentNotFound = "AgentNotFound"
 
 	// Signature verification reasons
 	ReasonSignatureValid        = "SignatureValid"
@@ -148,18 +147,14 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
-	// Get workload using targetRef (preferred) or selector (legacy)
+	// Get workload via targetRef
 	workload, err := r.getWorkload(ctx, agentCard)
 	if err != nil {
 		agentCardLogger.Error(err, "Failed to get workload", "agentCard", agentCard.Name)
 
 		// Determine the appropriate reason based on error type
 		var reason, message, conditionReason string
-		if errors.Is(err, ErrMultipleAgentsMatched) {
-			reason = ReasonMultipleAgentsMatched
-			message = fmt.Sprintf("Cannot evaluate binding: %s", err.Error())
-			conditionReason = "MultipleAgentsMatched"
-		} else if errors.Is(err, ErrWorkloadNotFound) {
+		if errors.Is(err, ErrWorkloadNotFound) {
 			reason = ReasonAgentNotFound
 			message = "No matching workload found"
 			conditionReason = "WorkloadNotFound"
@@ -348,31 +343,14 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{RequeueAfter: syncPeriod}, nil
 }
 
-// ErrMultipleAgentsMatched is returned when multiple agents match the selector
-var ErrMultipleAgentsMatched = fmt.Errorf("multiple agents match selector")
-
-// getWorkload fetches the workload using targetRef or falls back to selector
+// getWorkload fetches the workload using targetRef.
+// The deprecated selector field is no longer supported — use targetRef for explicit workload references.
 func (r *AgentCardReconciler) getWorkload(ctx context.Context, agentCard *agentv1alpha1.AgentCard) (*WorkloadInfo, error) {
-	// Prefer targetRef if specified
 	if agentCard.Spec.TargetRef != nil {
 		return r.getWorkloadByTargetRef(ctx, agentCard.Namespace, agentCard.Spec.TargetRef)
 	}
 
-	// Fall back to deprecated selector with warning
-	if agentCard.Spec.Selector != nil {
-		// Use V(1) to reduce log noise - this is logged on every reconcile
-		agentCardLogger.V(1).Info("AgentCard uses deprecated 'selector' field, please migrate to 'targetRef'",
-			"agentCard", agentCard.Name,
-			"namespace", agentCard.Namespace)
-		// Emit event for visibility - events are deduplicated by the recorder
-		if r.Recorder != nil {
-			r.Recorder.Event(agentCard, corev1.EventTypeWarning, "DeprecatedSelector",
-				"AgentCard uses deprecated 'selector' field, please migrate to 'targetRef' for explicit workload references")
-		}
-		return r.findMatchingWorkloadBySelector(ctx, agentCard)
-	}
-
-	return nil, fmt.Errorf("neither targetRef nor selector specified")
+	return nil, fmt.Errorf("spec.targetRef is required: specify the workload backing this agent")
 }
 
 // getWorkloadByTargetRef fetches the workload referenced by targetRef using duck typing
@@ -420,113 +398,6 @@ func (r *AgentCardReconciler) getWorkloadByTargetRef(ctx context.Context, namesp
 	}, nil
 }
 
-// findMatchingWorkloadBySelector finds a workload matching the selector (legacy mode)
-// It searches Deployments, StatefulSets, and Agent CRDs
-// Returns ErrMultipleAgentsMatched if more than one unique workload matches
-func (r *AgentCardReconciler) findMatchingWorkloadBySelector(ctx context.Context, agentCard *agentv1alpha1.AgentCard) (*WorkloadInfo, error) {
-	if agentCard.Spec.Selector == nil {
-		return nil, fmt.Errorf("no selector specified")
-	}
-
-	// Build selector that includes the agent label to ensure we only match agent workloads
-	selectorLabels := make(map[string]string)
-	for k, v := range agentCard.Spec.Selector.MatchLabels {
-		selectorLabels[k] = v
-	}
-	selectorLabels[LabelAgentType] = LabelValueAgent
-
-	labelSelector := client.MatchingLabels(selectorLabels)
-	namespace := client.InNamespace(agentCard.Namespace)
-
-	// Use a map to deduplicate by name (Agent CRD creates Deployment with same name)
-	workloadsByName := make(map[string]*WorkloadInfo)
-	var matchedNames []string
-
-	// Search Deployments first (preferred over Agent CRD)
-	deployments := &appsv1.DeploymentList{}
-	if err := r.List(ctx, deployments, namespace, labelSelector); err != nil {
-		return nil, fmt.Errorf("failed to list deployments: %w", err)
-	}
-	for i := range deployments.Items {
-		d := &deployments.Items[i]
-		if _, exists := workloadsByName[d.Name]; !exists {
-			workloadsByName[d.Name] = &WorkloadInfo{
-				Name:        d.Name,
-				Namespace:   d.Namespace,
-				APIVersion:  "apps/v1",
-				Kind:        "Deployment",
-				Labels:      d.Labels,
-				Ready:       isDeploymentReady(d),
-				ServiceName: d.Name,
-			}
-			matchedNames = append(matchedNames, d.Name)
-		}
-	}
-
-	// Search StatefulSets
-	statefulsets := &appsv1.StatefulSetList{}
-	if err := r.List(ctx, statefulsets, namespace, labelSelector); err != nil {
-		return nil, fmt.Errorf("failed to list statefulsets: %w", err)
-	}
-	for i := range statefulsets.Items {
-		s := &statefulsets.Items[i]
-		if _, exists := workloadsByName[s.Name]; !exists {
-			workloadsByName[s.Name] = &WorkloadInfo{
-				Name:        s.Name,
-				Namespace:   s.Namespace,
-				APIVersion:  "apps/v1",
-				Kind:        "StatefulSet",
-				Labels:      s.Labels,
-				Ready:       isStatefulSetReady(s),
-				ServiceName: s.Name,
-			}
-			matchedNames = append(matchedNames, s.Name)
-		}
-	}
-
-	// Search Agent CRDs (fallback if no Deployment/StatefulSet with same name)
-	agents := &agentv1alpha1.AgentList{}
-	if err := r.List(ctx, agents, namespace, labelSelector); err != nil {
-		return nil, fmt.Errorf("failed to list agents: %w", err)
-	}
-	for i := range agents.Items {
-		a := &agents.Items[i]
-		if _, exists := workloadsByName[a.Name]; !exists {
-			workloadsByName[a.Name] = &WorkloadInfo{
-				Name:        a.Name,
-				Namespace:   a.Namespace,
-				APIVersion:  agentv1alpha1.GroupVersion.String(),
-				Kind:        "Agent",
-				Labels:      a.Labels,
-				Ready:       isAgentCRDReady(a),
-				ServiceName: a.Name,
-			}
-			matchedNames = append(matchedNames, a.Name)
-		}
-	}
-
-	// Check results
-	if len(workloadsByName) == 0 {
-		return nil, fmt.Errorf("%w: no matching workload found for selector", ErrWorkloadNotFound)
-	}
-
-	if len(workloadsByName) > 1 {
-		agentCardLogger.Error(ErrMultipleAgentsMatched, "Ambiguous selector - identity binding requires unique selector",
-			"count", len(workloadsByName),
-			"agentCard", agentCard.Name,
-			"matchingWorkloads", matchedNames)
-		return nil, fmt.Errorf("%w: found %d workloads (%v) - use more specific labels in selector or use targetRef",
-			ErrMultipleAgentsMatched, len(workloadsByName), matchedNames)
-	}
-
-	// Return the single match
-	for _, workload := range workloadsByName {
-		return workload, nil
-	}
-
-	return nil, fmt.Errorf("%w: no matching workload found for selector", ErrWorkloadNotFound)
-}
-
 // isWorkloadReady determines if a workload is ready to serve traffic using duck typing
 func (r *AgentCardReconciler) isWorkloadReady(obj *unstructured.Unstructured, kind string) bool {
 	switch kind {
@@ -545,29 +416,6 @@ func (r *AgentCardReconciler) isWorkloadReady(obj *unstructured.Unstructured, ki
 // isAgentWorkload checks if labels indicate this is a Kagenti agent
 func isAgentWorkload(labels map[string]string) bool {
 	return labels != nil && labels[LabelAgentType] == LabelValueAgent
-}
-
-// isDeploymentReady checks if a Deployment is ready
-func isDeploymentReady(d *appsv1.Deployment) bool {
-	for _, c := range d.Status.Conditions {
-		if c.Type == appsv1.DeploymentAvailable && c.Status == corev1.ConditionTrue {
-			return true
-		}
-	}
-	return false
-}
-
-// isStatefulSetReady checks if a StatefulSet is ready
-func isStatefulSetReady(s *appsv1.StatefulSet) bool {
-	return s.Status.ReadyReplicas == s.Status.Replicas
-}
-
-// isAgentCRDReady checks if an Agent CRD is ready
-func isAgentCRDReady(agent *agentv1alpha1.Agent) bool {
-	if agent.Status.DeploymentStatus == nil {
-		return false
-	}
-	return agent.Status.DeploymentStatus.Phase == agentv1alpha1.PhaseReady
 }
 
 // isDeploymentReadyFromUnstructured checks Deployment readiness from unstructured
@@ -963,18 +811,7 @@ func (r *AgentCardReconciler) mapAgentToAgentCard(ctx context.Context, obj clien
 
 	var requests []reconcile.Request
 	for _, agentCard := range agentCardList.Items {
-		// Check if this AgentCard references this Agent via targetRef
 		if r.targetRefMatchesWorkload(&agentCard, agent, agentv1alpha1.GroupVersion.String(), "Agent") {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      agentCard.Name,
-					Namespace: agentCard.Namespace,
-				},
-			})
-			continue
-		}
-		// Fall back to selector matching
-		if r.selectorMatchesAgent(&agentCard, agent) {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      agentCard.Name,
@@ -990,14 +827,10 @@ func (r *AgentCardReconciler) mapAgentToAgentCard(ctx context.Context, obj clien
 // mapWorkloadToAgentCard maps Deployment/StatefulSet events to AgentCard reconcile requests
 func (r *AgentCardReconciler) mapWorkloadToAgentCard(apiVersion, kind string) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		labels := obj.GetLabels()
-
-		// Only process workloads with the agent type label
-		if !isAgentWorkload(labels) {
+		if !isAgentWorkload(obj.GetLabels()) {
 			return nil
 		}
 
-		// Find all AgentCards that might reference this workload
 		agentCardList := &agentv1alpha1.AgentCardList{}
 		if err := r.List(ctx, agentCardList, client.InNamespace(obj.GetNamespace())); err != nil {
 			agentCardLogger.Error(err, "Failed to list AgentCards for mapping")
@@ -1006,18 +839,7 @@ func (r *AgentCardReconciler) mapWorkloadToAgentCard(apiVersion, kind string) ha
 
 		var requests []reconcile.Request
 		for _, agentCard := range agentCardList.Items {
-			// Check if this AgentCard references this workload via targetRef
 			if r.targetRefMatchesWorkload(&agentCard, obj, apiVersion, kind) {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{
-						Name:      agentCard.Name,
-						Namespace: agentCard.Namespace,
-					},
-				})
-				continue
-			}
-			// Fall back to selector matching
-			if r.selectorMatchesWorkload(&agentCard, labels) {
 				requests = append(requests, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      agentCard.Name,
@@ -1031,21 +853,6 @@ func (r *AgentCardReconciler) mapWorkloadToAgentCard(apiVersion, kind string) ha
 	}
 }
 
-// selectorMatchesAgent checks if an AgentCard selector matches an Agent
-func (r *AgentCardReconciler) selectorMatchesAgent(agentCard *agentv1alpha1.AgentCard, agent *agentv1alpha1.Agent) bool {
-	if agentCard.Spec.Selector == nil || agent.Labels == nil {
-		return false
-	}
-
-	for key, value := range agentCard.Spec.Selector.MatchLabels {
-		if agent.Labels[key] != value {
-			return false
-		}
-	}
-
-	return true
-}
-
 // targetRefMatchesWorkload checks if an AgentCard targetRef matches a workload
 func (r *AgentCardReconciler) targetRefMatchesWorkload(agentCard *agentv1alpha1.AgentCard, obj client.Object, apiVersion, kind string) bool {
 	if agentCard.Spec.TargetRef == nil {
@@ -1054,21 +861,6 @@ func (r *AgentCardReconciler) targetRefMatchesWorkload(agentCard *agentv1alpha1.
 	return agentCard.Spec.TargetRef.Name == obj.GetName() &&
 		agentCard.Spec.TargetRef.Kind == kind &&
 		agentCard.Spec.TargetRef.APIVersion == apiVersion
-}
-
-// selectorMatchesWorkload checks if an AgentCard selector matches a workload's labels
-func (r *AgentCardReconciler) selectorMatchesWorkload(agentCard *agentv1alpha1.AgentCard, labels map[string]string) bool {
-	if agentCard.Spec.Selector == nil || labels == nil {
-		return false
-	}
-
-	for key, value := range agentCard.Spec.Selector.MatchLabels {
-		if labels[key] != value {
-			return false
-		}
-	}
-
-	return true
 }
 
 // agentLabelPredicate filters for resources with kagenti.io/type=agent

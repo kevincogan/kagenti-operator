@@ -225,7 +225,7 @@ cat > my-agent-card.json << 'EOF'
   "name": "Weather Agent",
   "description": "Provides weather information for any location",
   "version": "1.0.0",
-  "url": "http://weather-agent-svc.default.svc.cluster.local:8000",
+  "url": "http://weather-agent.default.svc.cluster.local:8000",
   "capabilities": {"streaming": true, "pushNotifications": false},
   "defaultInputModes": ["text/plain"],
   "defaultOutputModes": ["application/json"]
@@ -250,28 +250,28 @@ EOF
 
 kubectl apply -f weather-agent-configmap.yaml
 
-# Deploy Agent + AgentCard
+# Deploy Deployment + Service + AgentCard (targetRef)
 cat <<EOF | kubectl apply -f -
-apiVersion: agent.kagenti.dev/v1alpha1
-kind: Agent
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: weather-agent
   namespace: default
   labels:
     app.kubernetes.io/name: weather-agent
     kagenti.io/type: agent
-    kagenti.io/agent-protocol: a2a
+    kagenti.io/protocol: a2a
 spec:
-  description: "Provides weather information for any location"
   replicas: 1
-  imageSource:
-    image: "python:3.11-slim"
-  servicePorts:
-    - name: http
-      port: 8000
-      protocol: TCP
-      targetPort: 8000
-  podTemplateSpec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weather-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weather-agent
+        kagenti.io/type: agent
+        kagenti.io/protocol: a2a
     spec:
       initContainers:
       - name: setup-agentcard
@@ -285,6 +285,7 @@ spec:
           mountPath: /app
       containers:
       - name: agent
+        image: python:3.11-slim
         command: ["python3", "-m", "http.server", "8000"]
         workingDir: /app
         volumeMounts:
@@ -297,6 +298,19 @@ spec:
       - name: app-dir
         emptyDir: {}
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: weather-agent
+  namespace: default
+spec:
+  selector:
+    app.kubernetes.io/name: weather-agent
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+---
 apiVersion: agent.kagenti.dev/v1alpha1
 kind: AgentCard
 metadata:
@@ -304,14 +318,12 @@ metadata:
   namespace: default
 spec:
   syncPeriod: "30s"
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: weather-agent
-      kagenti.io/type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: weather-agent
 EOF
 
-# Wait for Agent controller to create the deployment, then wait for readiness
-until kubectl get deployment/weather-agent 2>/dev/null; do sleep 2; done
 kubectl wait --for=condition=Available deployment/weather-agent --timeout=120s
 kubectl wait --for=jsonpath='.status.lastSyncTime' agentcard/weather-agent-card --timeout=60s
 ```
@@ -331,7 +343,7 @@ status:
   signatureVerificationDetails: "JWS signature verified successfully (alg=RS256, kid=my-signing-key)"
   signatureKeyId: "my-signing-key"
   signatureSpiffeId: ""            # empty unless --spiffe-id was used during signing
-  signatureIdentityMatch: false    # true only when BOTH signature and identity binding pass
+  signatureIdentityMatch: null     # only set when identityBinding is configured in spec
 ```
 
 **Setup complete.** The AgentCard signature is verified against the public key in the secret.
@@ -352,7 +364,7 @@ cat > unsigned-card.json << 'EOF'
   "name": "Rogue Agent",
   "description": "No signature",
   "version": "1.0.0",
-  "url": "http://rogue-agent-svc.default.svc.cluster.local:8000",
+  "url": "http://rogue-agent.default.svc.cluster.local:8000",
   "capabilities": {"streaming": false, "pushNotifications": false},
   "defaultInputModes": ["text/plain"],
   "defaultOutputModes": ["application/json"]
@@ -372,22 +384,26 @@ EOF
 
 kubectl apply -f rogue-configmap.yaml
 cat <<EOF | kubectl apply -f -
-apiVersion: agent.kagenti.dev/v1alpha1
-kind: Agent
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: rogue-agent
   namespace: default
   labels:
     app.kubernetes.io/name: rogue-agent
     kagenti.io/type: agent
-    kagenti.io/agent-protocol: a2a
+    kagenti.io/protocol: a2a
 spec:
   replicas: 1
-  imageSource:
-    image: "python:3.11-slim"
-  servicePorts:
-    - {name: http, port: 8000, protocol: TCP, targetPort: 8000}
-  podTemplateSpec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rogue-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rogue-agent
+        kagenti.io/type: agent
+        kagenti.io/protocol: a2a
     spec:
       initContainers:
       - name: setup-agentcard
@@ -398,6 +414,7 @@ spec:
         - {name: app-dir, mountPath: /app}
       containers:
       - name: agent
+        image: python:3.11-slim
         command: ["python3", "-m", "http.server", "8000"]
         workingDir: /app
         volumeMounts:
@@ -408,6 +425,19 @@ spec:
       - name: app-dir
         emptyDir: {}
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rogue-agent
+  namespace: default
+spec:
+  selector:
+    app.kubernetes.io/name: rogue-agent
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+---
 apiVersion: agent.kagenti.dev/v1alpha1
 kind: AgentCard
 metadata:
@@ -415,14 +445,12 @@ metadata:
   namespace: default
 spec:
   syncPeriod: "30s"
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: rogue-agent
-      kagenti.io/type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: rogue-agent
 EOF
 
-# Wait for Agent controller to create the deployment, then wait for readiness
-until kubectl get deployment/rogue-agent 2>/dev/null; do sleep 2; done
 kubectl wait --for=condition=Available deployment/rogue-agent --timeout=120s
 kubectl wait --for=jsonpath='.status.lastSyncTime' agentcard/rogue-agent-card --timeout=60s
 kubectl get agentcard -o wide
@@ -451,7 +479,7 @@ cat > tampered-card.json << 'EOF'
   "name": "Tampered Agent",
   "description": "Signed with wrong key",
   "version": "1.0.0",
-  "url": "http://tampered-agent-svc.default.svc.cluster.local:8000",
+  "url": "http://tampered-agent.default.svc.cluster.local:8000",
   "capabilities": {"streaming": false, "pushNotifications": false},
   "defaultInputModes": ["text/plain"],
   "defaultOutputModes": ["application/json"]
@@ -473,22 +501,26 @@ EOF
 
 kubectl apply -f tampered-configmap.yaml
 cat <<EOF | kubectl apply -f -
-apiVersion: agent.kagenti.dev/v1alpha1
-kind: Agent
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: tampered-agent
   namespace: default
   labels:
     app.kubernetes.io/name: tampered-agent
     kagenti.io/type: agent
-    kagenti.io/agent-protocol: a2a
+    kagenti.io/protocol: a2a
 spec:
   replicas: 1
-  imageSource:
-    image: "python:3.11-slim"
-  servicePorts:
-    - {name: http, port: 8000, protocol: TCP, targetPort: 8000}
-  podTemplateSpec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tampered-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tampered-agent
+        kagenti.io/type: agent
+        kagenti.io/protocol: a2a
     spec:
       initContainers:
       - name: setup-agentcard
@@ -499,6 +531,7 @@ spec:
         - {name: app-dir, mountPath: /app}
       containers:
       - name: agent
+        image: python:3.11-slim
         command: ["python3", "-m", "http.server", "8000"]
         workingDir: /app
         volumeMounts:
@@ -509,6 +542,19 @@ spec:
       - name: app-dir
         emptyDir: {}
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tampered-agent
+  namespace: default
+spec:
+  selector:
+    app.kubernetes.io/name: tampered-agent
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+---
 apiVersion: agent.kagenti.dev/v1alpha1
 kind: AgentCard
 metadata:
@@ -516,14 +562,12 @@ metadata:
   namespace: default
 spec:
   syncPeriod: "30s"
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: tampered-agent
-      kagenti.io/type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: tampered-agent
 EOF
 
-# Wait for Agent controller to create the deployment, then wait for readiness
-until kubectl get deployment/tampered-agent 2>/dev/null; do sleep 2; done
 kubectl wait --for=condition=Available deployment/tampered-agent --timeout=120s
 kubectl wait --for=jsonpath='.status.lastSyncTime' agentcard/tampered-agent-card --timeout=60s
 kubectl get agentcard -o wide
@@ -771,7 +815,8 @@ kubectl get networkpolicy -n <namespace>
 
 ```bash
 kubectl delete agentcard weather-agent-card rogue-agent-card tampered-agent-card -n default 2>/dev/null
-kubectl delete agent weather-agent rogue-agent tampered-agent -n default 2>/dev/null
+kubectl delete deployment weather-agent rogue-agent tampered-agent -n default 2>/dev/null
+kubectl delete service weather-agent rogue-agent tampered-agent -n default 2>/dev/null
 kubectl delete configmap weather-agent-card rogue-agent-card tampered-agent-card -n default 2>/dev/null
 helm uninstall kagenti-operator -n kagenti-system
 kubectl delete secret a2a-public-keys -n kagenti-system

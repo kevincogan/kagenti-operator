@@ -384,7 +384,10 @@ kubectl patch agentcard weather-card -n demo --type=merge -p '
     }
   }
 }'
+
+# Wait for reconcile + pod rollout (label removal triggers a new rollout)
 sleep 5
+kubectl rollout status deployment/weather-agent -n demo --timeout=60s
 
 # Check binding - should be false
 kubectl get agentcard weather-card -n demo -o jsonpath='{.status.bindingStatus}' | jq .
@@ -405,9 +408,9 @@ kubectl get agentcard weather-card -n demo -o jsonpath='{.status.bindingStatus}'
 kubectl get agentcard weather-card -n demo -o jsonpath='{.status.signatureIdentityMatch}'
 # Expected: false
 
-# The signature-verified label has been REMOVED from pods
-kubectl get pods -n demo -l app=weather-agent --show-labels | grep signature-verified
-# Expected: no results (label removed)
+# The signature-verified label has been REMOVED from pods (new pods after rollout)
+kubectl get pods -n demo -l app=weather-agent --show-labels
+# Expected: pods WITHOUT agent.kagenti.dev/signature-verified label
 
 # NetworkPolicy is now restrictive — other agents cannot reach this agent
 kubectl get networkpolicy -n demo
@@ -431,7 +434,10 @@ kubectl patch agentcard weather-card -n demo --type=merge -p '
     }
   }
 }'
+
+# Wait for reconcile + pod rollout (label restoration triggers a new rollout)
 sleep 5
+kubectl rollout status deployment/weather-agent -n demo --timeout=60s
 
 # Binding now passes
 kubectl get agentcard weather-card -n demo -o jsonpath='{.status.bindingStatus}' | jq .
@@ -452,7 +458,7 @@ kubectl get agentcard weather-card -n demo -o jsonpath='{.status.bindingStatus}'
 kubectl get agentcard weather-card -n demo -o jsonpath='{.status.signatureIdentityMatch}'
 # Expected: true
 
-# Label is back on pods
+# Label is back on pods (new pods after rollout)
 kubectl get pods -n demo -l app=weather-agent --show-labels | grep signature-verified
 # Expected: agent.kagenti.dev/signature-verified=true
 

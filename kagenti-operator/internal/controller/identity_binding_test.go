@@ -42,80 +42,76 @@ var _ = Describe("Identity Binding", func() {
 
 	Context("AgentCard Binding Evaluation - Matching", func() {
 		const (
-			agentName     = "bind-eval-match-agent"
-			agentCardName = "bind-eval-match-card"
-			namespace     = "default"
-			trustDomain   = "test.local"
+			deploymentName = "bind-eval-match-deploy"
+			agentCardName  = "bind-eval-match-card"
+			namespace      = "default"
+			trustDomain    = "test.local"
 		)
 
 		ctx := context.Background()
 
 		AfterEach(func() {
-			// Clean up resources with proper wait
 			By("cleaning up test resources")
 			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
-			cleanupResource(ctx, &agentv1alpha1.Agent{}, agentName, namespace)
-			cleanupResource(ctx, &corev1.Service{}, agentName, namespace)
+			cleanupResource(ctx, &appsv1.Deployment{}, deploymentName, namespace)
+			cleanupResource(ctx, &corev1.Service{}, deploymentName, namespace)
 		})
 
 		It("should evaluate binding as Bound when SPIFFE ID matches allowlist", func() {
-			By("creating an Agent with specific service account")
-			agent := &agentv1alpha1.Agent{
+			By("creating a Deployment with agent labels")
+			labels := map[string]string{
+				"app.kubernetes.io/name": deploymentName,
+				LabelAgentType:           LabelValueAgent,
+				LabelKagentiProtocol:     "a2a",
+			}
+			deployment := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      agentName,
+					Name:      deploymentName,
 					Namespace: namespace,
-					Labels: map[string]string{
-						"app.kubernetes.io/name": agentName,
-						LabelAgentType:           LabelValueAgent,
-						LabelAgentProtocol:       "a2a",
-					},
+					Labels:    labels,
 				},
-				Spec: agentv1alpha1.AgentSpec{
-					PodTemplateSpec: &corev1.PodTemplateSpec{
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": deploymentName}},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": deploymentName}},
 						Spec: corev1.PodSpec{
 							ServiceAccountName: "test-sa",
 							Containers: []corev1.Container{
-								{
-									Name:  "agent",
-									Image: "test-image:latest",
-								},
+								{Name: "agent", Image: "test-image:latest"},
 							},
 						},
 					},
-					ImageSource: agentv1alpha1.ImageSource{
-						Image: ptr.To("test-image:latest"),
-					},
 				},
 			}
-			Expect(k8sClient.Create(ctx, agent)).To(Succeed())
+			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
 
-			// Update agent status to Ready
+			By("setting Deployment status to Available")
 			Eventually(func() error {
-				if err := k8sClient.Get(ctx, types.NamespacedName{Name: agentName, Namespace: namespace}, agent); err != nil {
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, deployment); err != nil {
 					return err
 				}
-				agent.Status.DeploymentStatus = &agentv1alpha1.DeploymentStatus{
-					Phase: agentv1alpha1.PhaseReady,
+				deployment.Status.Conditions = []appsv1.DeploymentCondition{
+					{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
 				}
-				return k8sClient.Status().Update(ctx, agent)
+				return k8sClient.Status().Update(ctx, deployment)
 			}).Should(Succeed())
 
-			By("creating a Service for the Agent")
+			By("creating a Service for the Deployment")
 			service := &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      agentName,
+					Name:      deploymentName,
 					Namespace: namespace,
 				},
 				Spec: corev1.ServiceSpec{
 					Ports: []corev1.ServicePort{
 						{Name: "http", Port: 8000, Protocol: corev1.ProtocolTCP},
 					},
-					Selector: map[string]string{"app.kubernetes.io/name": agentName},
+					Selector: map[string]string{"app": deploymentName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, service)).To(Succeed())
 
-			By("creating an AgentCard with identity binding (SPIFFE ID via JWS header)")
+			By("creating an AgentCard with targetRef and identity binding (SPIFFE ID via JWS header)")
 			expectedSpiffeID := "spiffe://" + trustDomain + "/ns/" + namespace + "/sa/test-sa"
 			agentCard := &agentv1alpha1.AgentCard{
 				ObjectMeta: metav1.ObjectMeta{
@@ -124,11 +120,10 @@ var _ = Describe("Identity Binding", func() {
 				},
 				Spec: agentv1alpha1.AgentCardSpec{
 					SyncPeriod: "30s",
-					Selector: &agentv1alpha1.AgentSelector{
-						MatchLabels: map[string]string{
-							"app.kubernetes.io/name": agentName,
-							LabelAgentType:           LabelValueAgent,
-						},
+					TargetRef: &agentv1alpha1.TargetRef{
+						APIVersion: "apps/v1",
+						Kind:       "Deployment",
+						Name:       deploymentName,
 					},
 					IdentityBinding: &agentv1alpha1.IdentityBinding{
 						AllowedSpiffeIDs: []agentv1alpha1.SpiffeID{agentv1alpha1.SpiffeID(expectedSpiffeID)},
@@ -194,10 +189,10 @@ var _ = Describe("Identity Binding", func() {
 
 	Context("AgentCard Binding Evaluation - NonMatching", func() {
 		const (
-			agentName     = "bind-eval-nomatch-agent"
-			agentCardName = "bind-eval-nomatch-card"
-			namespace     = "default"
-			trustDomain   = "test.local"
+			deploymentName = "bind-eval-nomatch-deploy"
+			agentCardName  = "bind-eval-nomatch-card"
+			namespace      = "default"
+			trustDomain    = "test.local"
 		)
 
 		ctx := context.Background()
@@ -205,68 +200,65 @@ var _ = Describe("Identity Binding", func() {
 		AfterEach(func() {
 			By("cleaning up test resources")
 			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
-			cleanupResource(ctx, &agentv1alpha1.Agent{}, agentName, namespace)
-			cleanupResource(ctx, &corev1.Service{}, agentName, namespace)
+			cleanupResource(ctx, &appsv1.Deployment{}, deploymentName, namespace)
+			cleanupResource(ctx, &corev1.Service{}, deploymentName, namespace)
 		})
 
 		It("should evaluate binding as NotBound when SPIFFE ID is not in allowlist", func() {
-			By("creating an Agent")
-			agent := &agentv1alpha1.Agent{
+			By("creating a Deployment with agent labels")
+			labels := map[string]string{
+				"app.kubernetes.io/name": deploymentName,
+				LabelAgentType:           LabelValueAgent,
+				LabelKagentiProtocol:     "a2a",
+			}
+			deployment := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      agentName,
+					Name:      deploymentName,
 					Namespace: namespace,
-					Labels: map[string]string{
-						"app.kubernetes.io/name": agentName,
-						LabelAgentType:           LabelValueAgent,
-						LabelAgentProtocol:       "a2a",
-					},
+					Labels:    labels,
 				},
-				Spec: agentv1alpha1.AgentSpec{
-					PodTemplateSpec: &corev1.PodTemplateSpec{
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": deploymentName}},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": deploymentName}},
 						Spec: corev1.PodSpec{
 							ServiceAccountName: "test-sa",
 							Containers: []corev1.Container{
-								{
-									Name:  "agent",
-									Image: "test-image:latest",
-								},
+								{Name: "agent", Image: "test-image:latest"},
 							},
 						},
 					},
-					ImageSource: agentv1alpha1.ImageSource{
-						Image: ptr.To("test-image:latest"),
-					},
 				},
 			}
-			Expect(k8sClient.Create(ctx, agent)).To(Succeed())
+			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
 
-			// Update agent status to Ready
+			By("setting Deployment status to Available")
 			Eventually(func() error {
-				if err := k8sClient.Get(ctx, types.NamespacedName{Name: agentName, Namespace: namespace}, agent); err != nil {
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, deployment); err != nil {
 					return err
 				}
-				agent.Status.DeploymentStatus = &agentv1alpha1.DeploymentStatus{
-					Phase: agentv1alpha1.PhaseReady,
+				deployment.Status.Conditions = []appsv1.DeploymentCondition{
+					{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
 				}
-				return k8sClient.Status().Update(ctx, agent)
+				return k8sClient.Status().Update(ctx, deployment)
 			}).Should(Succeed())
 
-			By("creating a Service for the Agent")
+			By("creating a Service for the Deployment")
 			service := &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      agentName,
+					Name:      deploymentName,
 					Namespace: namespace,
 				},
 				Spec: corev1.ServiceSpec{
 					Ports: []corev1.ServicePort{
 						{Name: "http", Port: 8000, Protocol: corev1.ProtocolTCP},
 					},
-					Selector: map[string]string{"app.kubernetes.io/name": agentName},
+					Selector: map[string]string{"app": deploymentName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, service)).To(Succeed())
 
-			By("creating an AgentCard with identity binding")
+			By("creating an AgentCard with targetRef and identity binding")
 			// JWS SPIFFE ID will NOT match the allowlist → binding should fail
 			agentCard := &agentv1alpha1.AgentCard{
 				ObjectMeta: metav1.ObjectMeta{
@@ -275,11 +267,10 @@ var _ = Describe("Identity Binding", func() {
 				},
 				Spec: agentv1alpha1.AgentCardSpec{
 					SyncPeriod: "30s",
-					Selector: &agentv1alpha1.AgentSelector{
-						MatchLabels: map[string]string{
-							"app.kubernetes.io/name": agentName,
-							LabelAgentType:           LabelValueAgent,
-						},
+					TargetRef: &agentv1alpha1.TargetRef{
+						APIVersion: "apps/v1",
+						Kind:       "Deployment",
+						Name:       deploymentName,
 					},
 					IdentityBinding: &agentv1alpha1.IdentityBinding{
 						AllowedSpiffeIDs: []agentv1alpha1.SpiffeID{"spiffe://" + trustDomain + "/ns/other/sa/other-sa"},
@@ -911,33 +902,6 @@ var _ = Describe("Identity Binding", func() {
 		})
 	})
 })
-
-// Helper function to list AgentCards for an Agent
-func listAgentCardsForAgent(ctx context.Context, c client.Client, agent *agentv1alpha1.Agent) ([]*agentv1alpha1.AgentCard, error) {
-	cards := &agentv1alpha1.AgentCardList{}
-	if err := c.List(ctx, cards, client.InNamespace(agent.Namespace)); err != nil {
-		return nil, err
-	}
-
-	var result []*agentv1alpha1.AgentCard
-	for i := range cards.Items {
-		card := &cards.Items[i]
-		if card.Labels == nil {
-			continue
-		}
-		match := true
-		for key, value := range card.Spec.Selector.MatchLabels {
-			if agent.Labels[key] != value {
-				match = false
-				break
-			}
-		}
-		if match {
-			result = append(result, card)
-		}
-	}
-	return result, nil
-}
 
 // cleanupResource removes a resource and waits for it to be fully deleted
 func cleanupResource(ctx context.Context, obj client.Object, name, namespace string) {

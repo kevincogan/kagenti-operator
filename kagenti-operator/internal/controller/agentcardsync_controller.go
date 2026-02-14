@@ -243,19 +243,7 @@ func (r *AgentCardSyncReconciler) ensureAgentCard(ctx context.Context, obj clien
 			needsUpdate = true
 		}
 
-		// Update targetRef if it's still using the old selector format
-		if existingCard.Spec.TargetRef == nil && existingCard.Spec.Selector != nil {
-			syncLogger.Info("Migrating AgentCard from selector to targetRef",
-				"agentCard", cardName)
-			existingCard.Spec.TargetRef = &agentv1alpha1.TargetRef{
-				APIVersion: gvk.GroupVersion().String(),
-				Kind:       gvk.Kind,
-				Name:       obj.GetName(),
-			}
-			needsUpdate = true
-		}
-
-		// Ensure existing TargetRef (if present) matches the current workload.
+		// Ensure existing TargetRef matches the current workload.
 		if existingCard.Spec.TargetRef != nil {
 			tr := existingCard.Spec.TargetRef
 			expectedAPIVersion := gvk.GroupVersion().String()
@@ -345,31 +333,15 @@ func (r *AgentCardSyncReconciler) findExistingCardForWorkload(ctx context.Contex
 	}
 
 	expectedAPIVersion := gvk.GroupVersion().String()
-	workloadLabels := obj.GetLabels()
 
 	for i := range cardList.Items {
 		card := &cardList.Items[i]
 
-		// Check targetRef match
 		if card.Spec.TargetRef != nil &&
 			card.Spec.TargetRef.APIVersion == expectedAPIVersion &&
 			card.Spec.TargetRef.Kind == gvk.Kind &&
 			card.Spec.TargetRef.Name == obj.GetName() {
 			return card.Name, true
-		}
-
-		// Check selector match — the card's selector labels must be a subset of the workload labels
-		if card.Spec.Selector != nil && len(card.Spec.Selector.MatchLabels) > 0 {
-			allMatch := true
-			for k, v := range card.Spec.Selector.MatchLabels {
-				if workloadLabels[k] != v {
-					allMatch = false
-					break
-				}
-			}
-			if allMatch {
-				return card.Name, true
-			}
 		}
 	}
 	return "", false

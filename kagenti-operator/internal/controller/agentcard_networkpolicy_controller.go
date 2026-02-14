@@ -110,9 +110,8 @@ func (r *AgentCardNetworkPolicyReconciler) Reconcile(ctx context.Context, req ct
 }
 
 // resolveWorkload resolves the workload name and pod selector labels from the AgentCard.
-// It supports targetRef (preferred), status.targetRef (resolved by main controller), and selector (legacy).
+// Requires spec.targetRef to identify the backing workload.
 func (r *AgentCardNetworkPolicyReconciler) resolveWorkload(ctx context.Context, agentCard *agentv1alpha1.AgentCard) (string, map[string]string, error) {
-	// Prefer spec.targetRef
 	if agentCard.Spec.TargetRef != nil {
 		ref := agentCard.Spec.TargetRef
 		podLabels, err := r.getPodTemplateLabels(ctx, agentCard.Namespace, ref)
@@ -122,22 +121,7 @@ func (r *AgentCardNetworkPolicyReconciler) resolveWorkload(ctx context.Context, 
 		return ref.Name, podLabels, nil
 	}
 
-	// Try status.targetRef (populated by AgentCardReconciler after resolving selector)
-	if agentCard.Status.TargetRef != nil {
-		ref := agentCard.Status.TargetRef
-		podLabels, err := r.getPodTemplateLabels(ctx, agentCard.Namespace, ref)
-		if err == nil {
-			return ref.Name, podLabels, nil
-		}
-		// Fall through to selector if status targetRef lookup fails
-	}
-
-	// Fall back to selector (legacy)
-	if agentCard.Spec.Selector != nil && len(agentCard.Spec.Selector.MatchLabels) > 0 {
-		return agentCard.Name, agentCard.Spec.Selector.MatchLabels, nil
-	}
-
-	return "", nil, fmt.Errorf("neither targetRef nor selector specified")
+	return "", nil, fmt.Errorf("spec.targetRef is required: specify the workload backing this agent")
 }
 
 // getPodTemplateLabels extracts the pod template labels from a workload using targetRef
@@ -512,7 +496,6 @@ func (r *AgentCardNetworkPolicyReconciler) mapAgentToAgentCard(ctx context.Conte
 
 	var requests []reconcile.Request
 	for _, agentCard := range agentCardList.Items {
-		// Check targetRef
 		if agentCard.Spec.TargetRef != nil &&
 			agentCard.Spec.TargetRef.Name == agent.Name &&
 			agentCard.Spec.TargetRef.Kind == "Agent" {
@@ -522,25 +505,6 @@ func (r *AgentCardNetworkPolicyReconciler) mapAgentToAgentCard(ctx context.Conte
 					Namespace: agentCard.Namespace,
 				},
 			})
-			continue
-		}
-		// Check selector
-		if agentCard.Spec.Selector != nil && agent.Labels != nil {
-			match := true
-			for key, value := range agentCard.Spec.Selector.MatchLabels {
-				if agent.Labels[key] != value {
-					match = false
-					break
-				}
-			}
-			if match {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{
-						Name:      agentCard.Name,
-						Namespace: agentCard.Namespace,
-					},
-				})
-			}
 		}
 	}
 

@@ -100,8 +100,8 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.BoolVar(&enableClientRegistration, "enable-client-registration", true,
 		"If set, Kagenti will register clients (agents and tools) in Keycloak")
-	flag.BoolVar(&enableLegacyAgentCRD, "enable-legacy-agent-crd", true,
-		"Enable support for legacy Agent CRD. Set to false after full migration to workload-based agents (Deployments/StatefulSets).")
+	flag.BoolVar(&enableLegacyAgentCRD, "enable-legacy-agent-crd", false,
+		"Enable support for the deprecated Agent CRD. Only enable if you still have Agent CR resources; new deployments should use Deployments/StatefulSets with AgentCard targetRef.")
 
 	// Signature verification flags
 	flag.BoolVar(&requireA2ASignature, "require-a2a-signature", false,
