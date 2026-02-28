@@ -220,13 +220,23 @@ spec:
                         description:
                           description: Description explains what this skill does
                           type: string
+                        examples:
+                          description: Examples are sample prompts or inputs for this
+                            skill (A2A spec)
+                          items:
+                            type: string
+                          type: array
+                        id:
+                          description: ID is a unique identifier for this skill (A2A
+                            spec)
+                          type: string
                         inputModes:
                           description: InputModes are the media types this skill accepts
                           items:
                             type: string
                           type: array
                         name:
-                          description: Name is the identifier for this skill
+                          description: Name is the human-readable name for this skill
                           type: string
                         outputModes:
                           description: OutputModes are the media types this skill
@@ -260,6 +270,12 @@ spec:
                                   "number", "boolean", "object", "array")
                                 type: string
                             type: object
+                          type: array
+                        tags:
+                          description: Tags are categorical labels for this skill
+                            (A2A spec)
+                          items:
+                            type: string
                           type: array
                       type: object
                     type: array

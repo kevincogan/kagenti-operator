@@ -94,19 +94,6 @@ spec:
                     pattern: ^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$
                     type: string
                 type: object
-              selector:
-                description: 'Deprecated: Use TargetRef instead. If both are set,
-                  TargetRef takes precedence.'
-                properties:
-                  matchLabels:
-                    additionalProperties:
-                      type: string
-                    description: MatchLabels is a map of {key,value} pairs to match
-                      against Agent labels
-                    type: object
-                required:
-                - matchLabels
-                type: object
               syncPeriod:
                 default: 30s
                 description: SyncPeriod is how often to re-fetch the agent card (e.g.,
@@ -128,7 +115,6 @@ spec:
                     minLength: 1
                     type: string
                   name:
-                    description: Name is the name of the target resource
                     minLength: 1
                     type: string
                 required:
@@ -145,8 +131,8 @@ spec:
                   evaluation
                 properties:
                   bound:
-                    description: Bound indicates whether the verified SPIFFE ID is
-                      in the allowlist
+                    description: Bound indicates whether the verified SPIFFE ID belongs
+                      to the configured trust domain
                     type: boolean
                   lastEvaluationTime:
                     description: LastEvaluationTime is when the binding was last evaluated
@@ -214,7 +200,7 @@ spec:
                           type: object
                         protected:
                           description: Protected is the base64url-encoded JWS protected
-                            header (contains alg, kid, spiffe_id).
+                            header (contains alg, kid, x5c).
                           type: string
                         signature:
                           description: Signature is the base64url-encoded JWS signature
@@ -234,13 +220,23 @@ spec:
                         description:
                           description: Description explains what this skill does
                           type: string
+                        examples:
+                          description: Examples are sample prompts or inputs for this
+                            skill (A2A spec)
+                          items:
+                            type: string
+                          type: array
+                        id:
+                          description: ID is a unique identifier for this skill (A2A
+                            spec)
+                          type: string
                         inputModes:
                           description: InputModes are the media types this skill accepts
                           items:
                             type: string
                           type: array
                         name:
-                          description: Name is the identifier for this skill
+                          description: Name is the human-readable name for this skill
                           type: string
                         outputModes:
                           description: OutputModes are the media types this skill
@@ -264,7 +260,6 @@ spec:
                                   is for
                                 type: string
                               name:
-                                description: Name is the parameter name
                                 type: string
                               required:
                                 description: Required indicates if this parameter
@@ -275,6 +270,12 @@ spec:
                                   "number", "boolean", "object", "array")
                                 type: string
                             type: object
+                          type: array
+                        tags:
+                          description: Tags are categorical labels for this skill
+                            (A2A spec)
+                          items:
+                            type: string
                           type: array
                       type: object
                     type: array
@@ -291,8 +292,8 @@ spec:
                     type: string
                 type: object
               cardId:
-                description: CardId is the SHA256 hash of the JCS-canonicalized card
-                  content (optional drift detection)
+                description: CardId is the SHA-256 hash of the card content for drift
+                  detection.
                 type: string
               conditions:
                 description: Conditions represent the current state of the indexing
@@ -353,8 +354,7 @@ spec:
                   type: object
                 type: array
               expectedSpiffeID:
-                description: ExpectedSpiffeID is the SPIFFE ID used for binding evaluation
-                  (from JWS protected header)
+                description: ExpectedSpiffeID is the SPIFFE ID used for binding evaluation.
                 type: string
               lastSyncTime:
                 description: LastSyncTime is when the agent card was last successfully
@@ -373,8 +373,8 @@ spec:
                   JWS protected header kid)
                 type: string
               signatureSpiffeId:
-                description: SignatureSpiffeID is the SPIFFE ID from the JWS protected
-                  header (set only when valid).
+                description: SignatureSpiffeID is the SPIFFE ID from the leaf certificate
+                  SAN URI (set only when valid).
                 type: string
               signatureVerificationDetails:
                 description: SignatureVerificationDetails contains details about the
@@ -396,7 +396,6 @@ spec:
                     minLength: 1
                     type: string
                   name:
-                    description: Name is the name of the target resource
                     minLength: 1
                     type: string
                 required:
