@@ -1,0 +1,19 @@
+# Helm values overlay for full enforcement mode
+# Use after validating in audit mode that signatures verify correctly.
+#
+# Usage:
+#   helm upgrade --install kagenti-operator ./charts/kagenti-operator \
+#     -f demos/openclaw-integration/k8s/values-openclaw-enforce.yaml \
+#     -n kagenti-system --create-namespace
+
+signatureVerification:
+  enabled: true
+  auditMode: false
+  enforceNetworkPolicies: true
+  spireTrustDomain: "demo.example.com"
+  spireTrustBundle:
+    configMapName: "spire-bundle"
+    configMapNamespace: "spire-system"
+    configMapKey: "bundle.spiffe"
+    refreshInterval: "5m"
+  svidExpiryGracePeriod: "30m"

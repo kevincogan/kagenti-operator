@@ -1,0 +1,21 @@
+# Helm values overlay for kagenti-operator with OpenClaw integration
+# Enables full agentcard security features: signature verification,
+# identity binding, and network policy enforcement.
+#
+# Usage:
+#   helm upgrade --install kagenti-operator ./charts/kagenti-operator \
+#     -f demos/openclaw-integration/k8s/values-openclaw-integration.yaml \
+#     -n kagenti-system --create-namespace
+
+signatureVerification:
+  enabled: true
+  # Start in audit mode to validate without blocking; set false for enforcement
+  auditMode: true
+  enforceNetworkPolicies: false
+  spireTrustDomain: "demo.example.com"
+  spireTrustBundle:
+    configMapName: "spire-bundle"
+    configMapNamespace: "spire-system"
+    configMapKey: "bundle.spiffe"
+    refreshInterval: "5m"
+  svidExpiryGracePeriod: "30m"

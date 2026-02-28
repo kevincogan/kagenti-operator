@@ -1,0 +1,20 @@
+# Manual AgentCard with identity binding for the NPS Agent.
+# If the AgentCardSync controller auto-creates a card, this manual card
+# takes precedence and the auto-created one is deleted.
+#
+# Usage:
+#   kubectl apply -f nps-agentcard.yaml
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentCard
+metadata:
+  name: nps-agent-card
+  namespace: nps-agent
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nps-agent
+  syncPeriod: "30s"
+  identityBinding:
+    strict: true
+    trustDomain: "demo.example.com"

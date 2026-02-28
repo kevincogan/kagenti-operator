@@ -1,0 +1,22 @@
+# Manual AgentCard with identity binding for strict verification.
+# If the AgentCardSync controller auto-creates a card, this manual card
+# takes precedence and the auto-created one is deleted.
+#
+# Generate from template:
+#   export OPENCLAW_NAMESPACE=<prefix>-openclaw
+#   envsubst < openclaw-agentcard.yaml.envsubst > openclaw-agentcard.yaml
+#   kubectl apply -f openclaw-agentcard.yaml
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentCard
+metadata:
+  name: openclaw-card
+  namespace: ${OPENCLAW_NAMESPACE}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: openclaw
+  syncPeriod: "30s"
+  identityBinding:
+    strict: true
+    trustDomain: "demo.example.com"
