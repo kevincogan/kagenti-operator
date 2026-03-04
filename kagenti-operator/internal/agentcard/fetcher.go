@@ -32,7 +32,7 @@ var fetcherLogger = ctrl.Log.WithName("agentcard").WithName("fetcher")
 
 const (
 	A2AProtocol         = "a2a"
-	A2AAgentCardPath    = "/.well-known/agent.json"
+	A2AAgentCardPath    = "/.well-known/agent-card.json"
 	DefaultFetchTimeout = 10 * time.Second
 )
 

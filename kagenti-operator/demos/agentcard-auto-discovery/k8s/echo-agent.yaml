@@ -30,7 +30,7 @@ spec:
               import http.server, json
               class H(http.server.BaseHTTPRequestHandler):
                   def do_GET(self):
-                      if self.path == '/.well-known/agent.json':
+                      if self.path == '/.well-known/agent-card.json':
                           card = {'name': 'Echo Agent', 'version': '1.0.0',
                                   'url': 'http://echo-agent.agents.svc:8001'}
                           self.send_response(200)

@@ -109,7 +109,7 @@ initContainers:
       - name: UNSIGNED_CARD_PATH
         value: /etc/agentcard/agent.json
       - name: AGENT_CARD_PATH
-        value: /app/.well-known/agent.json
+        value: /app/.well-known/agent-card.json
       - name: SIGN_TIMEOUT
         value: "30s"
     volumeMounts:
@@ -173,7 +173,7 @@ Expected status:
 |----------|---------|-------------|
 | `SPIFFE_ENDPOINT_SOCKET` | `unix:///run/spire/agent-sockets/spire-agent.sock` | SPIRE Workload API socket |
 | `UNSIGNED_CARD_PATH` | `/etc/agentcard/agent.json` | Path to read the unsigned card |
-| `AGENT_CARD_PATH` | `/app/.well-known/agent.json` | Path to write the signed card |
+| `AGENT_CARD_PATH` | `/app/.well-known/agent-card.json` | Path to write the signed card |
 | `SIGN_TIMEOUT` | `30s` | Timeout for SPIRE connection |
 
 ## Prometheus Metrics

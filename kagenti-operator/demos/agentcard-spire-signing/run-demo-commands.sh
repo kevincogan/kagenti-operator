@@ -18,7 +18,7 @@ echo ""
 echo "=== 2. Signed Card Verification ==="
 kubectl exec -n "$NAMESPACE" "$POD" -c agent -- python3 -c "
 import json
-with open('/app/.well-known/agent.json') as f:
+with open('/app/.well-known/agent-card.json') as f:
     d = json.load(f)
 print(f'  Name:       {d.get(\"name\")}')
 print(f'  Signed:     {\"signatures\" in d}')

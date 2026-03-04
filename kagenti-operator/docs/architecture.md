@@ -173,7 +173,7 @@ The AgentCard Controller reconciles AgentCard CRs by resolving the backing workl
 1. Watch for AgentCard CR changes
 2. Resolve workload via spec.targetRef (Deployment or StatefulSet)
 3. Construct service URL for the agent
-4. Fetch agent card from /.well-known/agent.json
+4. Fetch agent card from /.well-known/agent-card.json
 5. Optionally verify signature (if --require-a2a-signature)
 6. Evaluate identity binding (if spec.identityBinding configured)
 7. Update AgentCard status:

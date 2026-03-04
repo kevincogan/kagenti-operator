@@ -67,7 +67,7 @@ spec:
             - name: UNSIGNED_CARD_PATH
               value: /etc/agentcard/agent.json
             - name: AGENT_CARD_PATH
-              value: /app/.well-known/agent.json
+              value: /app/.well-known/agent-card.json
             - name: SIGN_TIMEOUT
               value: "30s"
           volumeMounts:

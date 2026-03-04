@@ -94,7 +94,7 @@ The AgentCard controller:
 
 1. Resolves the backing workload via `spec.targetRef`
 2. Constructs the service URL for the agent
-3. Fetches the agent card from `/.well-known/agent.json`
+3. Fetches the agent card from `/.well-known/agent-card.json`
 4. Optionally verifies the card signature
 5. Parses and stores the card data in the AgentCard status
 6. Updates conditions to reflect sync status
@@ -156,7 +156,7 @@ Dynamic discovery enables sophisticated multi-agent patterns:
 The current implementation focuses on the [A2A (Agent-to-Agent)](https://a2a-protocol.org/) protocol, which provides:
 
 - Standardized agent card format
-- Well-defined discovery endpoint (`/.well-known/agent.json`)
+- Well-defined discovery endpoint (`/.well-known/agent-card.json`)
 - Rich metadata about agent capabilities
 - Skill and parameter descriptions
 

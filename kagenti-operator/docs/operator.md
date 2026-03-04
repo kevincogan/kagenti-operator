@@ -83,7 +83,7 @@ graph TD;
 The operator runs the following controllers:
 
 ### AgentCard Controller
-Reconciles `AgentCard` CRs by resolving the backing workload via `spec.targetRef` (duck typing), fetching the agent card from the workload's `/.well-known/agent.json` endpoint, verifying JWS signatures, evaluating SPIFFE identity binding, and updating the AgentCard status.
+Reconciles `AgentCard` CRs by resolving the backing workload via `spec.targetRef` (duck typing), fetching the agent card from the workload's `/.well-known/agent-card.json` endpoint, verifying JWS signatures, evaluating SPIFFE identity binding, and updating the AgentCard status.
 
 ### AgentCard Sync Controller
 Watches Deployments and StatefulSets labeled with `kagenti.io/type=agent` and one or more `protocol.kagenti.io/<name>` labels (e.g., `protocol.kagenti.io/a2a`). Automatically creates AgentCard resources with `targetRef` pointing to the discovered workloads. Sets owner references for garbage collection.

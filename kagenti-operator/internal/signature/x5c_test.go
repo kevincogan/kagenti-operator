@@ -213,7 +213,7 @@ func testCard() *agentv1alpha1.AgentCardData {
 	return &agentv1alpha1.AgentCardData{
 		Name:    "test-agent",
 		Version: "1.0.0",
-		URL:     "https://test.example.com/.well-known/agent.json",
+		URL:     "https://test.example.com/.well-known/agent-card.json",
 	}
 }
 

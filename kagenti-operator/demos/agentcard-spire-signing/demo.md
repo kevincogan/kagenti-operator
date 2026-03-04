@@ -131,7 +131,7 @@ weather-agent-card  a2a        Deployment   weather-agent   Weather Agent    tru
 1. The `sign-agentcard` init-container fetches an X.509-SVID from SPIRE via the Workload API
 2. It signs the unsigned AgentCard JSON with JWS (ES256), embedding the certificate chain in the `x5c` header
 3. The signed card is written to a shared `emptyDir` volume
-4. The main container serves the signed card at `/.well-known/agent.json`
+4. The main container serves the signed card at `/.well-known/agent-card.json`
 5. The operator fetches the card, verifies the JWS signature against the SPIRE trust bundle
 6. The operator extracts the SPIFFE ID from the leaf certificate's SAN URI
 7. If the SPIFFE ID belongs to the configured trust domain, the card is marked as Bound

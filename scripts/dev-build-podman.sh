@@ -9,10 +9,10 @@ cd "$(dirname "$0")/../kagenti-operator"
 
 TAG=$(date +%Y%m%d%H%M%S)
 echo "Building kagenti-operator:${TAG}..."
-docker build . --tag local/kagenti-operator:${TAG} --load
+podman build . --tag kagenti-operator:${TAG}
 
 echo "Loading image into kind cluster ${CLUSTER_NAME}..."
-kind load --name "${CLUSTER_NAME}" docker-image local/kagenti-operator:${TAG}
+kind load --name "${CLUSTER_NAME}" docker-image localhost/kagenti-operator:${TAG}
 
 if ! kubectl get namespace "${NAMESPACE}" &>/dev/null; then
   echo "Creating namespace ${NAMESPACE}..."
@@ -20,7 +20,7 @@ if ! kubectl get namespace "${NAMESPACE}" &>/dev/null; then
 fi
 
 echo "Updating deployment in namespace ${NAMESPACE}..."
-kubectl -n "${NAMESPACE}" set image deployment/kagenti-controller-manager manager=local/kagenti-operator:${TAG}
+kubectl -n "${NAMESPACE}" set image deployment/kagenti-controller-manager manager=localhost/kagenti-operator:${TAG}
 
 # Local Dockerfile builds to /manager, but production images (built with ko) use /ko-app/cmd.
 # Override the command for local dev. See: docs/identity-binding-quickstart.md

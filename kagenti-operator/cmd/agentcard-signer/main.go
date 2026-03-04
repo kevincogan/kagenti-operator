@@ -42,7 +42,7 @@ import (
 const (
 	defaultSocket       = "unix:///run/spire/sockets/agent.sock"
 	defaultUnsignedPath = "/etc/agentcard/agent.json"
-	defaultSignedPath   = "/app/.well-known/agent.json"
+	defaultSignedPath   = "/app/.well-known/agent-card.json"
 	defaultTimeout      = "30s"
 )
 

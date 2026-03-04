@@ -63,7 +63,7 @@ graph TD;
         Workload -->|Watches| AgentCardSync
         AgentCardSync -->|Auto-creates| AgentCardCRD
         AgentCardCRD -->|Reconciles| AgentCardController
-        AgentCardController -->|Fetches /.well-known/agent.json| AgentPod
+        AgentCardController -->|Fetches /.well-known/agent-card.json| AgentPod
         AgentCardController -->|Verifies signatures & identity| AgentCardCRD
         AgentCardCRD -->|Reconciles| NetworkPolicyController
         NetworkPolicyController -->|Creates| NetworkPolicy
