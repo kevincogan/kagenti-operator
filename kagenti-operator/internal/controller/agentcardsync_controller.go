@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -38,10 +37,6 @@ import (
 var syncLogger = ctrl.Log.WithName("controller").WithName("AgentCardSync")
 
 const (
-	// DefaultAutoSyncGracePeriod prevents duplicate cards when a Deployment and AgentCard
-	// are applied together (the Deployment event may fire before the manual card is cached).
-	DefaultAutoSyncGracePeriod = 5 * time.Second
-
 	// LabelManagedBy identifies auto-created AgentCards so the sync controller
 	// can distinguish its own cards from manually-created ones.
 	LabelManagedBy      = "app.kubernetes.io/managed-by"
@@ -51,18 +46,7 @@ const (
 // AgentCardSyncReconciler auto-creates AgentCards for labelled agent workloads.
 type AgentCardSyncReconciler struct {
 	client.Client
-	Scheme              *runtime.Scheme
-	AutoSyncGracePeriod time.Duration // 0 = use default; negative = disabled (tests)
-}
-
-func (r *AgentCardSyncReconciler) getAutoSyncGracePeriod() time.Duration {
-	if r.AutoSyncGracePeriod > 0 {
-		return r.AutoSyncGracePeriod
-	}
-	if r.AutoSyncGracePeriod < 0 {
-		return 0
-	}
-	return DefaultAutoSyncGracePeriod
+	Scheme *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agentcards,verbs=get;list;watch;create;update;patch;delete
@@ -210,14 +194,6 @@ func (r *AgentCardSyncReconciler) ensureAgentCard(ctx context.Context, obj clien
 		return ctrl.Result{}, nil
 	}
 
-	gracePeriod := r.getAutoSyncGracePeriod()
-	if gracePeriod > 0 && time.Since(obj.GetCreationTimestamp().Time) < gracePeriod {
-		syncLogger.V(1).Info("Workload recently created, requeueing before auto-creating AgentCard",
-			"workload", obj.GetName(), "kind", gvk.Kind,
-			"age", time.Since(obj.GetCreationTimestamp().Time).Round(time.Millisecond))
-		return ctrl.Result{RequeueAfter: gracePeriod}, nil
-	}
-
 	return r.createAgentCardForWorkload(ctx, obj, gvk, cardName)
 }
 
@@ -311,6 +287,11 @@ func (r *AgentCardSyncReconciler) createAgentCardForWorkload(ctx context.Context
 	if err := r.Create(ctx, agentCard); err != nil {
 		if errors.IsAlreadyExists(err) {
 			return r.handleAlreadyExistsOnCreate(ctx, obj, gvk, cardName)
+		}
+		if errors.IsForbidden(err) || errors.IsInvalid(err) {
+			syncLogger.Info("AgentCard creation rejected by webhook (duplicate targetRef)",
+				"agentCard", cardName, "workload", obj.GetName(), "kind", gvk.Kind)
+			return ctrl.Result{}, nil
 		}
 		syncLogger.Error(err, "Failed to create AgentCard")
 		return ctrl.Result{}, err

@@ -108,9 +108,8 @@ var _ = Describe("AgentCardSync Controller", func() {
 		It("should automatically create an AgentCard with targetRef for Deployment", func() {
 			By("reconciling the Deployment")
 			reconciler := &AgentCardSyncReconciler{
-				Client:              k8sClient,
-				Scheme:              k8sClient.Scheme(),
-				AutoSyncGracePeriod: -1,
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
 			}
 
 			_, err := reconciler.ReconcileDeployment(ctx, reconcile.Request{
@@ -181,9 +180,8 @@ var _ = Describe("AgentCardSync Controller", func() {
 
 			By("reconciling the Deployment")
 			reconciler := &AgentCardSyncReconciler{
-				Client:              k8sClient,
-				Scheme:              k8sClient.Scheme(),
-				AutoSyncGracePeriod: -1,
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
 			}
 
 			_, err := reconciler.ReconcileDeployment(ctx, reconcile.Request{
@@ -264,9 +262,8 @@ var _ = Describe("AgentCardSync Controller", func() {
 
 		It("should delete the auto-created card when a manual card exists", func() {
 			reconciler := &AgentCardSyncReconciler{
-				Client:              k8sClient,
-				Scheme:              k8sClient.Scheme(),
-				AutoSyncGracePeriod: -1,
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
 			}
 
 			By("auto-creating the card via first reconcile")
@@ -323,9 +320,8 @@ var _ = Describe("AgentCardSync Controller", func() {
 			}
 
 			reconciler := &AgentCardSyncReconciler{
-				Client:              k8sClient,
-				Scheme:              k8sClient.Scheme(),
-				AutoSyncGracePeriod: -1,
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
 			}
 
 			By("reconciling -- sync controller should skip creation, not delete manual cards")
@@ -427,9 +423,8 @@ var _ = Describe("AgentCardSync Controller", func() {
 		It("should automatically create an AgentCard with targetRef for StatefulSet", func() {
 			By("reconciling the StatefulSet")
 			reconciler := &AgentCardSyncReconciler{
-				Client:              k8sClient,
-				Scheme:              k8sClient.Scheme(),
-				AutoSyncGracePeriod: -1,
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
 			}
 
 			_, err := reconciler.ReconcileStatefulSet(ctx, reconcile.Request{
