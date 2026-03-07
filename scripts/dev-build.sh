@@ -24,4 +24,3 @@ kubectl rollout status -n kagenti-system deployment/kagenti-controller-manager
 
 echo "Current pods:"
 kubectl get pods -n kagenti-system -l control-plane=controller-manager
-

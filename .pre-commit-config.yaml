@@ -8,6 +8,7 @@ repos:
         args: ['--maxkb=1024']
         exclude: ^kagenti-operator/bin/
       - id: check-yaml
+        args: ['--allow-multiple-documents']
         # Exclude Helm templates as they contain Go template syntax
         exclude: ^charts/.*/templates/.*\.yaml$
       - id: check-json
