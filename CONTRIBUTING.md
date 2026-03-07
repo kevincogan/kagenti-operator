@@ -8,10 +8,10 @@ We can't wait to collaborate with you!
 
 ## Contributing Code
 
-Please follow the [Contribution guide](https://github.com/kagenti/kagenti/blob/main/CONTRIBUTING.md#contributing-to-this-project) as found in the Kagenti Repository for instructions on how to contribute to our repositories. 
+Please follow the [Contribution guide](https://github.com/kagenti/kagenti/blob/main/CONTRIBUTING.md#contributing-to-this-project) as found in the Kagenti Repository for instructions on how to contribute to our repositories.
 
 ### Developer's Guide
 
-Please follow our [Developer's Guide](https://github.com/kagenti/kagenti/blob/main/docs/dev-guide.md#developers-guide) as found in the Kagenti Repository where you can find comprehensive instructions for common development operations. 
+Please follow our [Developer's Guide](https://github.com/kagenti/kagenti/blob/main/docs/dev-guide.md#developers-guide) as found in the Kagenti Repository where you can find comprehensive instructions for common development operations.
 
 Please note that the section about pre-commit does not apply to this repository

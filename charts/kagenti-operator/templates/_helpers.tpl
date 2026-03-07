@@ -5,7 +5,7 @@
   {{- else if .Values.nameOverride }}
     {{ .Values.nameOverride | trunc 63 | trimSuffix "-" }}
   {{- else }}
-    kagenti-operator 
+    kagenti-operator
   {{- end }}
 {{- else }}
   kagenti-operator

@@ -47,7 +47,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Login to registry
-      uses: docker/login-action@v3
+      uses: docker/login-action@v4
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
@@ -59,4 +59,4 @@ jobs:
         cd ${{ env.CHARTS_PATH }}/kagenti-operator
         sed -i "s/__PLACEHOLDER__/${chartVersion}/g" values.yaml
         helm package . --destination . --version ${chartVersion} --app-version ${chartVersion}
-        helm push "./${chartPackageName}" oci://${{ env.REGISTRY }}/${{ env.REPO }}        
+        helm push "./${chartPackageName}" oci://${{ env.REGISTRY }}/${{ env.REPO }}
