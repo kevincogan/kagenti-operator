@@ -4,22 +4,72 @@ on:
     branches:
       - main
       - "release-*"
+  push:
+    branches:
+      - main
+
+defaults:
+  run:
+    working-directory: kagenti-operator
 
 jobs:
-  ci-checks:
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
-    name: CI Checks
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: kagenti-operator/go.mod
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+          working-directory: kagenti-operator
+          only-new-issues: true
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.22'
-      - name: Lint
-        run: find . -type f -name 'go.mod' -execdir go fmt ./... \;
-      - name: Static analysis
-        run: find . -type f -name 'go.mod' -execdir go vet ./... \;
+          go-version-file: kagenti-operator/go.mod
+      - name: Run tests
+        run: |
+          go mod tidy
+          make test
+
+  test-e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: kagenti-operator/go.mod
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Create Kind cluster
+        run: kind create cluster
+      - name: Run e2e tests
+        run: |
+          go mod tidy
+          make test-e2e
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: kagenti-operator/go.mod
       - name: Build
-        run: find . -type f -name 'go.mod' -execdir go build -v  ./... \;
-      # TODO - make sure at least bare bone tests work
-      # - name: Test
-      #   run: find . -type f -name 'go.mod' -execdir go test -v  ./... \;
+        run: make build
