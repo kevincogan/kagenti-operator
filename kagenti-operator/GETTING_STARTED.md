@@ -44,12 +44,6 @@ The Kagenti Operator discovers, indexes, and secures AI agents deployed in Kuber
 
 > **Note:** The `Agent` Custom Resource is deprecated and will be removed in a future release. Use standard Kubernetes Deployments or StatefulSets with the `kagenti.io/type: agent` label instead.
 
-### Stacklok ToolHive Operator
-
-The Stacklok ToolHive Operator is deployed as part of the Kagenti platform installation and manages:
-
-- **MCPServer**: Deploys MCP servers that provide tools and resources to agents
-
 ---
 
 ## Deploy an Agent
@@ -93,7 +87,7 @@ spec:
         - name: UV_CACHE_DIR
           value: /app/.cache/uv
         - name: MCP_URL
-          value: http://mcp-weather-tool-proxy.team1.svc.cluster.local:8000/mcp
+          value: http://weather-tool-mcp.team1.svc.cluster.local:8000/mcp
         - name: LLM_API_BASE
           value: http://host.docker.internal:11434/v1
         - name: LLM_API_KEY
@@ -134,98 +128,124 @@ kubectl logs -l app.kubernetes.io/name=weather-agent -n team1
 
 ## Deploy an MCP Server
 
-> **Note**: The MCPServer Custom Resource is managed by the Stacklok ToolHive Operator, which is deployed as part of the Kagenti platform installation. This guide shows how to deploy an MCPServer to enable end-to-end testing.
+MCP (Model Context Protocol) servers provide tools and resources that your agents can use. Deploy an MCP server after your agent is running.
 
-MCP (Model Context Protocol) servers provide tools and resources that your agents can use. Deploy an MCPServer after your agent is running.
-
-### Basic MCP Server Deployment
+### Basic MCP Server
 ```yaml
 kubectl apply -f - <<EOF
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPServer
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: weather-tool
-  namespace: team1
   labels:
-    kagenti.io/framework: Python
-    protocol.kagenti.io/streamable_http: ""
+    app.kubernetes.io/name: weather-tool
     kagenti.io/type: tool
-    toolhive-basename: weather-tool
 spec:
-  image: "ghcr.io/kagenti/agent-examples/weather_tool:v0.0.1-alpha.3"
-  transport: streamable-http
-  port: 8000
-  targetPort: 8000
-  proxyPort: 8000
-  podTemplateSpec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weather-tool
+      kagenti.io/type: tool
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weather-tool
+        kagenti.io/type: tool
     spec:
-      serviceAccountName: weather-tool
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
-      volumes:
-        - name: cache
-          emptyDir: {}
-        - name: tmp-dir
-          emptyDir: {}
       containers:
-        - name: mcp
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-            runAsUser: 1000
-          env:
-            - name: PORT
-              value: "8000"
-            - name: UV_CACHE_DIR
-              value: /app/.cache/uv
-          volumeMounts:
-            - name: cache
-              mountPath: /app/.cache
-              readOnly: false
-            - name: tmp-dir
-              mountPath: /tmp
-              readOnly: false
+      - name: mcp
+        image: ghcr.io/kagenti/agent-examples/weather_tool:latest
+        imagePullPolicy: Always
+        env:
+        - name: PORT
+          value: "8000"
+        - name: HOST
+          value: 0.0.0.0
+        - name: UV_CACHE_DIR
+          value: /app/.cache/uv
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - mountPath: /app/.cache
+          name: cache
+      volumes:
+      - name: cache
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/managed-by: kagenti-ui
+    app.kubernetes.io/name: weather-service
+    kagenti.io/framework: LangGraph
+    kagenti.io/inject: enabled
+    kagenti.io/type: agent
+    kagenti.io/workload-type: deployment
+    protocol.kagenti.io/a2a: ""
+  name: weather-service
+  namespace: team1
+spec:
+  ports:
+  - name: http
+    port: 8080
+    protocol: TCP
+    targetPort: 8000
+  selector:
+    app.kubernetes.io/name: weather-service
+    kagenti.io/type: agent
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    kagenti.io/managed-by: webhook
+  name: weather-service
+  namespace: team1
 EOF
 ```
 ---
 **Check Status**:
 ```bash
 
-# List MCP servers
-kubectl get mcpservers.toolhive.stacklok.dev -n team1
+# List deployments (mcp servers)
+kubectl get deployments -n team1 -l kagenti.io/type=tool
+
+# List pods (mcp servers)
+kubectl get pods -n team1 -l kagenti.io/type=tool
 
 # Check detailed status
-kubectl describe mcpservers.toolhive.stacklok.dev weather-tool -n team1
+kubectl describe deployments -l kagenti.io/type=tool -n team1
+kubectl describe pods -l kagenti.io/type=tool -n team1
 
 # View logs
-kubectl logs -l toolhive-basename=weather-tool -n team1
+kubectl logs -l kagenti.io/type=tool -n team1 --prefix
 ```
 
 
 ---
 ## End-to-End Testing: Send a Prompt to Agent
 
-Once your Agent and MCPServer are deployed and running, you can test the end-to-end flow by sending a prompt to the agent using JSON-RPC.
+Once your Agent and MCP Server are deployed and running, you can test the end-to-end flow by sending a prompt to the agent using JSON-RPC.
 
-> **Note**: The examples below use a temporary curl pod running inside the cluster. This approach allows you to directly access the agent service using its internal Kubernetes service DNS name (e.g., `http://mcp-weather-tool-proxy.team1.svc.cluster.local:8000`) without the need to set up port-forwarding from your local machine.
+> **Note**: The examples below use a temporary curl pod running inside the cluster. This approach allows you to directly access the agent service using its internal Kubernetes service DNS name (e.g., `http://weather-tool-mcp.team1.svc.cluster.local:8000`) without the need to set up port-forwarding from your local machine.
 
-The reason this DNS name works is that the ToolHive Operator automatically creates a Kubernetes Service for each MCPServer using a specific naming convention:
+The reason this DNS name works is that a Kubernetes Service is created for each MCP Server using a specific naming convention:
 
-mcp-[server-name]-proxy
+[server-name]-mcp
 
-For example, if your MCPServer resource is named weather-tool, the operator will generate a service named:
+For example, if your MCP Server resource is named weather-tool, the operator will generate a service named:
 
-mcp-weather-tool-proxy
+weather-tool-mcp
 
 Kubernetes then exposes this service internally via its built-in DNS system, producing a fully qualified service hostname in the form:
 
-mcp-[server-name]-proxy.[namespace].svc.cluster.local
+[server-name]-mcp.[namespace].svc.cluster.local
 ### Test Weather Query
 
-This example sends a weather query for New York to the weather-agent, which will communicate with the MCPServer to retrieve the weather information.
+This example sends a weather query for New York to the weather-agent, which will communicate with the MCP Server to retrieve the weather information.
 ```bash
 kubectl run curl-pod -i --tty --rm \
   --image=curlimages/curl:8.1.2 -n team1 -- \
@@ -295,7 +315,7 @@ You can watch the logs to see the agent communicating with the MCP server:
 kubectl logs -f -l app.kubernetes.io/name=weather-agent -n team1
 
 # Watch MCP server logs (in another terminal)
-kubectl logs -f -l toolhive-basename=weather-tool -n team1
+kubectl logs -f -l kagenti.io/type=tool -n team1
 ```
 
 ---
@@ -326,19 +346,19 @@ kubectl describe agentcard -n team1
 kubectl get agentcard -n team1 -o jsonpath='{.items[0].status.validSignature}'
 ```
 
-### MCPServer Status
+### MCP Server Status
 ```bash
-# List MCP servers
-kubectl get mcpservers.toolhive.stacklok.dev -n team1
+# List deployments (mcp servers)
+kubectl get deployments -n team1 -l kagenti.io/type=tool
 
 # Detailed status
-kubectl describe mcpservers.toolhive.stacklok.dev weather-tool -n team1
+kubectl describe deployment weather-tool -n team1
 
 # Check if pods are running
-kubectl get pods -n team1 -l toolhive-basename=weather-tool
+kubectl get pods -n team1 -l kagenti.io/type=tool
 
 # View logs
-kubectl logs -l toolhive-basename=weather-tool -n team1 -f
+kubectl logs -l kagenti.io/type=tool -n team1 -f
 ```
 
 ---
@@ -360,19 +380,19 @@ kubectl get pods -n team1 -l app.kubernetes.io/name=weather-agent
 ### MCP Server Not Starting
 ```bash
 # Check MCP server status
-kubectl get mcpservers.toolhive.stacklok.dev weather-tool -n team1 -o yaml
+kubectl get deployment weather-tool -n team1 -o yaml
 
 # Check pod status
-kubectl get pods -n team1 -l toolhive-basename=weather-tool
+kubectl get pods -n team1 -l kagenti.io/type=tool
 
 # Check events
-kubectl get events -n team1 --field-selector involvedObject.name=weather-tool
+kubectl get events -n team1 --field-selector involvedObject.kind=Pod,involvedObject.name=$(kubectl get pods -n team1 -l kagenti.io/type=tool -o jsonpath='{.items[0].metadata.name}') --sort-by='.lastTimestamp'
 
 # Verify service account exists
-kubectl get serviceaccount weather-tool-sa -n team1
+kubectl get serviceaccount weather-service -n team1
 
 # Check for image pull issues
-kubectl describe pod -n team1 -l toolhive-basename=weather-tool
+kubectl describe pod -n team1 -l kagenti.io/type=tool
 ```
 
 ### Agent Not Responding to Requests
@@ -387,7 +407,7 @@ kubectl run test-curl --image=curlimages/curl:8.1.2 --rm -i --restart=Never -n t
 # Check if agent can reach MCP server
 # Note: The agent container may not have curl installed, so we'll use a debug pod in the same namespace
 kubectl run curl-debug --image=curlimages/curl:8.1.2 --rm -i --tty -n team1 -- \
-  curl -v http://mcp-weather-tool-proxy.team1.svc.cluster.local:8000/health
+  curl -v http://weather-tool-mcp.team1.svc.cluster.local:8000/health
 
 ```
 
