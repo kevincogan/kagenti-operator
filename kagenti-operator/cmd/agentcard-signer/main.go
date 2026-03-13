@@ -32,6 +32,12 @@ import (
 	"path/filepath"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sclient "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
 	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 
@@ -110,6 +116,50 @@ func run() error {
 		"spiffe_id", spiffeID,
 		"output_path", signedPath,
 	)
+
+	if err := writeConfigMap(ctx, signedCard); err != nil {
+		logJSON("warn", "ConfigMap write failed (non-fatal, operator will use HTTP fallback)", "error", err.Error())
+	}
+
+	return nil
+}
+
+func writeConfigMap(ctx context.Context, signedCard []byte) error {
+	agentName := os.Getenv("AGENT_NAME")
+	namespace := os.Getenv("POD_NAMESPACE")
+	if agentName == "" || namespace == "" {
+		return fmt.Errorf("AGENT_NAME or POD_NAMESPACE not set, skipping ConfigMap write")
+	}
+
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("in-cluster config: %w", err)
+	}
+
+	clientset, err := k8sclient.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("k8s clientset: %w", err)
+	}
+
+	return writeConfigMapWithClient(ctx, clientset, agentName, namespace, signedCard)
+}
+
+func writeConfigMapWithClient(ctx context.Context, clientset k8sclient.Interface, agentName, namespace string, signedCard []byte) error {
+	cmName := agentName + "-card-signed"
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: namespace},
+		Data:       map[string]string{"agent-card.json": string(signedCard)},
+	}
+
+	_, err := clientset.CoreV1().ConfigMaps(namespace).Create(ctx, cm, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		_, err = clientset.CoreV1().ConfigMaps(namespace).Update(ctx, cm, metav1.UpdateOptions{})
+	}
+	if err != nil {
+		return fmt.Errorf("failed to write ConfigMap %s: %w", cmName, err)
+	}
+
+	logJSON("info", "signed card written to ConfigMap", "configMap", cmName, "namespace", namespace)
 	return nil
 }
 

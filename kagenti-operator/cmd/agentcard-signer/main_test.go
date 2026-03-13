@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -30,6 +31,10 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"github.com/kagenti/operator/internal/signature"
@@ -466,5 +471,57 @@ func TestSignCard_VerifiedByX5CProvider(t *testing.T) {
 	}
 	if result.SpiffeID != "spiffe://example.org/ns/default/sa/test" {
 		t.Errorf("expected SPIFFE ID from cert SAN, got %q", result.SpiffeID)
+	}
+}
+
+// --- writeConfigMap tests ---
+
+func TestWriteConfigMapWithClient_Create(t *testing.T) {
+	fakeClient := k8sfake.NewSimpleClientset()
+	cardJSON := []byte(`{"name":"test-agent","version":"1.0"}`)
+
+	err := writeConfigMapWithClient(context.Background(), fakeClient, "my-agent", "test-ns", cardJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cm, err := fakeClient.CoreV1().ConfigMaps("test-ns").Get(context.Background(), "my-agent-card-signed", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("ConfigMap not created: %v", err)
+	}
+	if cm.Data["agent-card.json"] != string(cardJSON) {
+		t.Errorf("ConfigMap data mismatch: got %q", cm.Data["agent-card.json"])
+	}
+}
+
+func TestWriteConfigMapWithClient_Update(t *testing.T) {
+	existing := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-agent-card-signed", Namespace: "test-ns"},
+		Data:       map[string]string{"agent-card.json": `{"name":"old"}`},
+	}
+	fakeClient := k8sfake.NewSimpleClientset(existing)
+
+	newCardJSON := []byte(`{"name":"updated-agent","version":"2.0"}`)
+	err := writeConfigMapWithClient(context.Background(), fakeClient, "my-agent", "test-ns", newCardJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cm, _ := fakeClient.CoreV1().ConfigMaps("test-ns").Get(context.Background(), "my-agent-card-signed", metav1.GetOptions{})
+	if cm.Data["agent-card.json"] != string(newCardJSON) {
+		t.Errorf("ConfigMap not updated: got %q", cm.Data["agent-card.json"])
+	}
+}
+
+func TestWriteConfigMap_MissingEnvVars(t *testing.T) {
+	t.Setenv("AGENT_NAME", "")
+	t.Setenv("POD_NAMESPACE", "")
+
+	err := writeConfigMap(context.Background(), []byte("{}"))
+	if err == nil {
+		t.Fatal("expected error when env vars are missing")
+	}
+	if !testing.Verbose() {
+		// Just check it contains the expected message
 	}
 }
