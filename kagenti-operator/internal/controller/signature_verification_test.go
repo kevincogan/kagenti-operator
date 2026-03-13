@@ -1095,7 +1095,7 @@ type mockFetcherFunc struct {
 	fn func() *agentv1alpha1.AgentCardData
 }
 
-func (m *mockFetcherFunc) Fetch(_ context.Context, _, _ string) (*agentv1alpha1.AgentCardData, error) {
+func (m *mockFetcherFunc) Fetch(_ context.Context, _, _ string, _ string, _ string) (*agentv1alpha1.AgentCardData, error) {
 	return m.fn(), nil
 }
 

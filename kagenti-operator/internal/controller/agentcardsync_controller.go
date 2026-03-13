@@ -46,7 +46,8 @@ const (
 // AgentCardSyncReconciler auto-creates AgentCards for labelled agent workloads.
 type AgentCardSyncReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme           *runtime.Scheme
+	SpireTrustDomain string
 }
 
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agentcards,verbs=get;list;watch;create;update;patch;delete
@@ -279,6 +280,10 @@ func (r *AgentCardSyncReconciler) createAgentCardForWorkload(ctx context.Context
 		},
 	}
 
+	if r.SpireTrustDomain != "" {
+		agentCard.Spec.IdentityBinding = &agentv1alpha1.IdentityBinding{}
+	}
+
 	if err := controllerutil.SetControllerReference(obj, agentCard, r.Scheme); err != nil {
 		syncLogger.Error(err, "Failed to set controller reference for AgentCard")
 		return ctrl.Result{}, err
@@ -288,12 +293,8 @@ func (r *AgentCardSyncReconciler) createAgentCardForWorkload(ctx context.Context
 		if errors.IsAlreadyExists(err) {
 			return r.handleAlreadyExistsOnCreate(ctx, obj, gvk, cardName)
 		}
-		if errors.IsForbidden(err) || errors.IsInvalid(err) {
-			syncLogger.Info("AgentCard creation rejected by webhook (duplicate targetRef)",
-				"agentCard", cardName, "workload", obj.GetName(), "kind", gvk.Kind)
-			return ctrl.Result{}, nil
-		}
-		syncLogger.Error(err, "Failed to create AgentCard")
+		syncLogger.Error(err, "Failed to create AgentCard",
+			"agentCard", cardName, "workload", obj.GetName(), "kind", gvk.Kind)
 		return ctrl.Result{}, err
 	}
 

@@ -220,7 +220,7 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	servicePort := r.getServicePort(service)
 	serviceURL := agentcard.GetServiceURL(workload.ServiceName, agentCard.Namespace, servicePort)
 
-	cardData, err := r.AgentFetcher.Fetch(ctx, protocol, serviceURL)
+	cardData, err := r.AgentFetcher.Fetch(ctx, protocol, serviceURL, workload.ServiceName, agentCard.Namespace)
 	if err != nil {
 		agentCardLogger.Error(err, "Failed to fetch agent card", "workload", workload.Name, "url", serviceURL)
 		if condErr := r.updateCondition(ctx, agentCard, "Synced", metav1.ConditionFalse, "FetchFailed", err.Error()); condErr != nil {
@@ -1133,13 +1133,20 @@ func (r *AgentCardReconciler) maybeRestartForResign(ctx context.Context, agentCa
 	currentBundleHash := r.SignatureProvider.BundleHash()
 	workloadBundleHash := annotations[AnnotationBundleHash]
 
-	needsRestart := false
-	reason := ""
-
 	grace := r.SVIDExpiryGracePeriod
 	if grace == 0 {
 		grace = DefaultSVIDExpiryGracePeriod
 	}
+
+	podAnnotations := getPodTemplateAnnotations(acc)
+	if ts, ok := podAnnotations[AnnotationResignTrigger]; ok {
+		if lastTrigger, err := time.Parse(time.RFC3339, ts); err == nil && time.Since(lastTrigger) < grace {
+			return
+		}
+	}
+
+	needsRestart := false
+	reason := ""
 
 	if !vr.LeafNotAfter.IsZero() && time.Until(vr.LeafNotAfter) < grace {
 		needsRestart = true
@@ -1235,7 +1242,7 @@ func setPodTemplateAnnotations(acc *podTemplateAccessor, annotations map[string]
 
 func (r *AgentCardReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.AgentFetcher == nil {
-		r.AgentFetcher = agentcard.NewFetcher()
+		r.AgentFetcher = agentcard.NewConfigMapFetcher(mgr.GetAPIReader())
 	}
 
 	if err := RegisterAgentCardTargetRefIndex(mgr); err != nil {

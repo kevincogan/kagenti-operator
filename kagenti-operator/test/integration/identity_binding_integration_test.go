@@ -94,7 +94,7 @@ func cleanupNamespace(t *testing.T, ctx context.Context) {
 // but do NOT exercise the full fetch → sign → verify → bind end-to-end path.
 type mockFetcher struct{}
 
-func (f *mockFetcher) Fetch(_ context.Context, _, _ string) (*agentv1alpha1.AgentCardData, error) {
+func (f *mockFetcher) Fetch(_ context.Context, _, _ string, _ string, _ string) (*agentv1alpha1.AgentCardData, error) {
 	return &agentv1alpha1.AgentCardData{
 		Name: "test-agent",
 		URL:  "http://test:8000",

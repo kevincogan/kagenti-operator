@@ -38,7 +38,7 @@ type mockFetcher struct {
 	err      error
 }
 
-func (m *mockFetcher) Fetch(ctx context.Context, protocol, url string) (*agentv1alpha1.AgentCardData, error) {
+func (m *mockFetcher) Fetch(ctx context.Context, protocol, url string, _ string, _ string) (*agentv1alpha1.AgentCardData, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
