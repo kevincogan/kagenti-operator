@@ -4,7 +4,7 @@
 # Restores the AgentCard to its correct binding state.
 #
 
-set -eu
+set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agents}"
 AGENTCARD="${AGENTCARD:-weather-agent-card}"

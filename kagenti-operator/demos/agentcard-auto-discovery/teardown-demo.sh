@@ -4,7 +4,7 @@
 # Removes the echo-agent and any auto-created AgentCards.
 #
 
-set -eu
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAMESPACE="${NAMESPACE:-agents}"

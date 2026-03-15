@@ -1140,7 +1140,11 @@ func (r *AgentCardReconciler) maybeRestartForResign(ctx context.Context, agentCa
 
 	podAnnotations := getPodTemplateAnnotations(acc)
 	if ts, ok := podAnnotations[AnnotationResignTrigger]; ok {
-		if lastTrigger, err := time.Parse(time.RFC3339, ts); err == nil && time.Since(lastTrigger) < grace {
+		lastTrigger, err := time.Parse(time.RFC3339, ts)
+		if err != nil {
+			agentCardLogger.Info("Ignoring malformed resign-trigger annotation",
+				"value", ts, "error", err.Error())
+		} else if time.Since(lastTrigger) < grace {
 			return
 		}
 	}

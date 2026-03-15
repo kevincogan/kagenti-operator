@@ -187,8 +187,8 @@ func (f *ConfigMapFetcher) Fetch(
 					"configMap", cmName, "namespace", namespace)
 			}
 		} else if !apierrors.IsNotFound(err) {
-			fetcherLogger.Info("Error reading ConfigMap, falling back to HTTP",
-				"configMap", cmName, "namespace", namespace, "error", err.Error())
+			fetcherLogger.Error(err, "Failed to read ConfigMap, falling back to HTTP",
+				"configMap", cmName, "namespace", namespace)
 		}
 	}
 

@@ -4,7 +4,7 @@
 # Assumes setup is complete (see demo.md).
 #
 
-set -eu
+set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agents}"
 

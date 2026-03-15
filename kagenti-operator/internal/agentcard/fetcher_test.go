@@ -197,6 +197,40 @@ func TestConfigMapFetcher_ConfigMapNotFound(t *testing.T) {
 	}
 }
 
+func TestConfigMapFetcher_MissingKey(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "empty-agent" + SignedCardConfigMapSuffix,
+			Namespace: "test-ns",
+		},
+		Data: map[string]string{},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == A2AAgentCardPath {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(testAgentCardJSON))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(newFakeScheme()).
+		WithObjects(cm).
+		Build()
+	fetcher := NewConfigMapFetcher(fakeClient)
+
+	card, err := fetcher.Fetch(context.Background(), A2AProtocol, srv.URL, "empty-agent", "test-ns")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if card.Name != "test-agent" {
+		t.Errorf("Name: got %q, want %q", card.Name, "test-agent")
+	}
+}
+
 func TestConfigMapFetcher_InvalidJSON(t *testing.T) {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{

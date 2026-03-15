@@ -4,7 +4,7 @@
 # Prerequisite: agentcard-spire-signing demo must be deployed.
 #
 
-set -eu
+set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agents}"
 AGENTCARD="${AGENTCARD:-weather-agent-card}"

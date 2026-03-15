@@ -4,7 +4,7 @@
 # Restores the operator grace period to 30m without overwriting other args.
 #
 
-set -eu
+set -euo pipefail
 
 OPERATOR_NS="${OPERATOR_NS:-agentcard-system}"
 OPERATOR_DEPLOY="${OPERATOR_DEPLOY:-agentcard-operator}"
