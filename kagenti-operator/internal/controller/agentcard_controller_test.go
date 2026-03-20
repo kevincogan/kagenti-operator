@@ -181,8 +181,11 @@ var _ = Describe("AgentCard Controller", func() {
 				URL:         "http://0.0.0.0:8000", // Agent's advertised URL
 				Skills: []agentv1alpha1.AgentSkill{
 					{
+						ID:          "skill-001",
 						Name:        "test-skill",
 						Description: "A test skill",
+						Tags:        []string{"test", "example"},
+						Examples:    []string{"Run a test scenario"},
 					},
 				},
 			}

@@ -221,6 +221,10 @@ type AgentCapabilities struct {
 
 // AgentSkill represents a skill offered by the agent
 type AgentSkill struct {
+	// A unique identifier for the agent's skill.
+	// +optional
+	ID string `json:"id,omitempty"`
+
 	// Name is the identifier for this skill
 	// +optional
 	Name string `json:"name,omitempty"`
@@ -228,6 +232,14 @@ type AgentSkill struct {
 	// Description explains what this skill does
 	// +optional
 	Description string `json:"description,omitempty"`
+
+	// A set of keywords describing the skill's capabilities.
+	// +optional
+	Tags []string `json:"tags,omitempty"`
+
+	// Example prompts or scenarios that this skill can handle.
+	// +optional
+	Examples []string `json:"examples,omitempty"`
 
 	// InputModes are the media types this skill accepts
 	// +optional

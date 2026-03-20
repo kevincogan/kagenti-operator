@@ -48,6 +48,9 @@ Thumbs.db
 **/dist/
 **/bin/
 
+# Spurious controller-gen CRD artifact
+kagenti-operator/config/crd/bases/_.yaml
+
 # Temporary and debug files
 *.log
 debug

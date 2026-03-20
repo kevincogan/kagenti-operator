@@ -100,8 +100,11 @@ Represents the A2A agent card structure based on the [A2A specification](https:/
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | string | Skill identifier |
+| `id` | string | Unique identifier for this skill |
+| `name` | string | Skill name |
 | `description` | string | What this skill does |
+| `tags` | []string | Keywords describing classes of capabilities for this skill |
+| `examples` | []string | Sample scenarios demonstrating how the skill can be used |
 | `inputModes` | []string | Media types this skill accepts |
 | `outputModes` | []string | Media types this skill produces |
 | `parameters` | [][SkillParameter](#skillparameter) | Parameters this skill accepts |
@@ -249,8 +252,15 @@ status:
       - text
 
     skills:
-      - name: "get-weather"
+      - id: "get-weather-001"
+        name: "get-weather"
         description: "Get current weather for a city"
+        tags:
+          - weather
+          - forecast
+        examples:
+          - "What is the weather in New York?"
+          - "Get the forecast for London"
         inputModes:
           - text
         outputModes:
