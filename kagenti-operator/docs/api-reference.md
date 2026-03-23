@@ -82,6 +82,9 @@ Represents the A2A agent card structure based on the [A2A specification](https:/
 | `description` | string | What the agent does |
 | `version` | string | Agent version |
 | `url` | string | Endpoint where the agent can be reached |
+| `documentationUrl` | string | Link to the agent's documentation |
+| `iconUrl` | string | Link to the agent's icon image |
+| `provider` | [AgentProvider](#agentprovider) | Organization providing the agent |
 | `capabilities` | [AgentCapabilities](#agentcapabilities) | Supported A2A features |
 | `defaultInputModes` | []string | Default media types the agent accepts |
 | `defaultOutputModes` | []string | Default media types the agent produces |
@@ -89,12 +92,29 @@ Represents the A2A agent card structure based on the [A2A specification](https:/
 | `supportsAuthenticatedExtendedCard` | boolean | Whether agent has an extended card |
 | `signatures` | [][AgentCardSignature](#agentcardsignature) | JWS signatures per A2A spec section 8.4.2 |
 
+#### AgentProvider
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `organization` | string | Name of the provider organization |
+| `url` | string | Provider's website |
+
 #### AgentCapabilities
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `streaming` | boolean | Whether the agent supports streaming responses |
 | `pushNotifications` | boolean | Whether the agent supports push notifications |
+| `extensions` | [][AgentExtension](#agentextension) | A2A protocol extensions supported by the agent |
+
+#### AgentExtension
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `uri` | string | Unique identifier for this extension |
+| `description` | string | What this extension does |
+| `required` | boolean | Whether this extension must be supported by the client |
+| `params` | map[string]JSON | Extension-specific configuration parameters |
 
 #### AgentSkill
 

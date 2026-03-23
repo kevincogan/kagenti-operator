@@ -94,19 +94,6 @@ spec:
                     pattern: ^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$
                     type: string
                 type: object
-              selector:
-                description: 'Deprecated: Use TargetRef instead. If both are set,
-                  TargetRef takes precedence.'
-                properties:
-                  matchLabels:
-                    additionalProperties:
-                      type: string
-                    description: MatchLabels is a map of {key,value} pairs to match
-                      against Agent labels
-                    type: object
-                required:
-                - matchLabels
-                type: object
               syncPeriod:
                 default: 30s
                 description: SyncPeriod is how often to re-fetch the agent card (e.g.,
@@ -128,7 +115,6 @@ spec:
                     minLength: 1
                     type: string
                   name:
-                    description: Name is the name of the target resource
                     minLength: 1
                     type: string
                 required:
@@ -145,8 +131,8 @@ spec:
                   evaluation
                 properties:
                   bound:
-                    description: Bound indicates whether the verified SPIFFE ID is
-                      in the allowlist
+                    description: Bound indicates whether the verified SPIFFE ID belongs
+                      to the configured trust domain
                     type: boolean
                   lastEvaluationTime:
                     description: LastEvaluationTime is when the binding was last evaluated
@@ -167,38 +153,83 @@ spec:
                 description: Card contains the cached agent card data
                 properties:
                   capabilities:
-                    description: Capabilities specifies supported A2A features
+                    description: The A2A capability set supported by the agent.
                     properties:
+                      extensions:
+                        description: A list of protocol extensions supported by the
+                          agent.
+                        items:
+                          description: AgentExtension describes an A2A protocol extension
+                            supported by the agent.
+                          properties:
+                            description:
+                              description: A human-readable description of how this
+                                agent uses the extension.
+                              type: string
+                            params:
+                              additionalProperties:
+                                x-kubernetes-preserve-unknown-fields: true
+                              description: Extension-specific configuration parameters.
+                              type: object
+                            required:
+                              description: |-
+                                If true, the client must understand and comply with the extension's
+                                requirements.
+                              type: boolean
+                            uri:
+                              description: The unique URI identifying the extension.
+                              type: string
+                          type: object
+                        type: array
                       pushNotifications:
-                        description: PushNotifications indicates if the agent supports
-                          push notifications
+                        description: |-
+                          Indicates if the agent supports sending push notifications for
+                          asynchronous task updates.
                         type: boolean
                       streaming:
-                        description: Streaming indicates if the agent supports streaming
-                          responses
+                        description: Indicates if the agent supports streaming responses.
                         type: boolean
                     type: object
                   defaultInputModes:
-                    description: DefaultInputModes are the default media types the
-                      agent accepts
+                    description: |-
+                      The set of interaction modes that the agent supports across all skills,
+                      defined as media types.
                     items:
                       type: string
                     type: array
                   defaultOutputModes:
-                    description: DefaultOutputModes are the default media types the
-                      agent produces
+                    description: The media types supported as outputs from this agent.
                     items:
                       type: string
                     type: array
                   description:
-                    description: Description provides information about what the agent
-                      does
+                    description: |-
+                      A human-readable description of the agent, assisting users and other
+                      agents in understanding its purpose.
+                    type: string
+                  documentationUrl:
+                    description: A URL providing additional documentation about the
+                      agent.
+                    type: string
+                  iconUrl:
+                    description: A URL to an icon for the agent.
                     type: string
                   name:
-                    description: Name is the human-readable name of the agent
+                    description: A human-readable name for the agent.
                     type: string
+                  provider:
+                    description: The service provider of the agent.
+                    properties:
+                      organization:
+                        description: The name of the agent provider's organization.
+                        type: string
+                      url:
+                        description: A URL for the agent provider's website or relevant
+                          documentation.
+                        type: string
+                    type: object
                   signatures:
-                    description: Signatures contains JWS signatures per A2A spec §8.4.2.
+                    description: JWS signatures per A2A spec §8.4.2.
                     items:
                       description: AgentCardSignature represents a JWS signature on
                         an AgentCard (A2A spec §8.4.2).
@@ -214,7 +245,7 @@ spec:
                           type: object
                         protected:
                           description: Protected is the base64url-encoded JWS protected
-                            header (contains alg, kid, spiffe_id).
+                            header (contains alg, kid, x5c).
                           type: string
                         signature:
                           description: Signature is the base64url-encoded JWS signature
@@ -226,13 +257,14 @@ spec:
                       type: object
                     type: array
                   skills:
-                    description: Skills is a list of skills/capabilities this agent
-                      offers
+                    description: |-
+                      Skills represent the abilities of an agent. A skill is a focused set of
+                      behaviors that the agent is likely to succeed at.
                     items:
-                      description: AgentSkill represents a skill offered by the agent
+                      description: AgentSkill represents a skill offered by the agent.
                       properties:
                         description:
-                          description: Description explains what this skill does
+                          description: A detailed description of the skill.
                           type: string
                         examples:
                           description: Example prompts or scenarios that this skill
@@ -244,69 +276,68 @@ spec:
                           description: A unique identifier for the agent's skill.
                           type: string
                         inputModes:
-                          description: InputModes are the media types this skill accepts
+                          description: |-
+                            The set of supported input media types for this skill, overriding the
+                            agent's defaults.
                           items:
                             type: string
                           type: array
                         name:
-                          description: Name is the identifier for this skill
+                          description: A human-readable name for the skill.
                           type: string
                         outputModes:
-                          description: OutputModes are the media types this skill
-                            produces
+                          description: |-
+                            The set of supported output media types for this skill, overriding the
+                            agent's defaults.
                           items:
                             type: string
+                          type: array
+                        parameters:
+                          description: The parameters accepted by this skill.
+                          items:
+                            description: SkillParameter defines a parameter accepted
+                              by a skill.
+                            properties:
+                              default:
+                                description: The default value for this parameter.
+                                type: string
+                              description:
+                                description: A human-readable description of the parameter.
+                                type: string
+                              name:
+                                description: The name of the parameter.
+                                type: string
+                              required:
+                                description: Indicates if this parameter must be provided.
+                                type: boolean
+                              type:
+                                description: The type of the parameter (e.g., "string",
+                                  "number", "boolean", "object", "array").
+                                type: string
+                            type: object
                           type: array
                         tags:
                           description: A set of keywords describing the skill's capabilities.
                           items:
                             type: string
                           type: array
-                        parameters:
-                          description: Parameters defines the parameters this skill
-                            accepts
-                          items:
-                            description: SkillParameter defines a parameter that a
-                              skill accepts
-                            properties:
-                              default:
-                                description: Default is the default value for this
-                                  parameter
-                                type: string
-                              description:
-                                description: Description explains what this parameter
-                                  is for
-                                type: string
-                              name:
-                                description: Name is the parameter name
-                                type: string
-                              required:
-                                description: Required indicates if this parameter
-                                  must be provided
-                                type: boolean
-                              type:
-                                description: Type is the parameter type (e.g., "string",
-                                  "number", "boolean", "object", "array")
-                                type: string
-                            type: object
-                          type: array
                       type: object
                     type: array
                   supportsAuthenticatedExtendedCard:
-                    description: SupportsAuthenticatedExtendedCard indicates if the
-                      agent has an extended card
+                    description: |-
+                      Indicates if the agent supports providing an extended agent card when
+                      authenticated.
                     type: boolean
                   url:
-                    description: URL is the endpoint where the A2A service can be
-                      reached
+                    description: The URL of the agent's endpoint.
                     type: string
                   version:
-                    description: Version is the agent's version string
+                    description: The version of the agent.
                     type: string
                 type: object
               cardId:
-                description: CardId is the SHA256 hash of the JCS-canonicalized card
-                  content (optional drift detection)
+                description: CardId is the SHA-256 hash of the card content for drift
+                  detection.
                 type: string
               conditions:
                 description: Conditions represent the current state of the indexing
@@ -367,8 +398,7 @@ spec:
                   type: object
                 type: array
               expectedSpiffeID:
-                description: ExpectedSpiffeID is the SPIFFE ID used for binding evaluation
-                  (from JWS protected header)
+                description: ExpectedSpiffeID is the SPIFFE ID used for binding evaluation.
                 type: string
               lastSyncTime:
                 description: LastSyncTime is when the agent card was last successfully
@@ -387,8 +417,8 @@ spec:
                   JWS protected header kid)
                 type: string
               signatureSpiffeId:
-                description: SignatureSpiffeID is the SPIFFE ID from the JWS protected
-                  header (set only when valid).
+                description: SignatureSpiffeID is the SPIFFE ID from the leaf certificate
+                  SAN URI (set only when valid).
                 type: string
               signatureVerificationDetails:
                 description: SignatureVerificationDetails contains details about the
@@ -410,7 +440,6 @@ spec:
                     minLength: 1
                     type: string
                   name:
-                    description: Name is the name of the target resource
                     minLength: 1
                     type: string
                 required:

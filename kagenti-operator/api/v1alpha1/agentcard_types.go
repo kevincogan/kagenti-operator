@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -142,46 +143,62 @@ type BindingStatus struct {
 	LastEvaluationTime *metav1.Time `json:"lastEvaluationTime,omitempty"`
 }
 
-// AgentCardData represents the A2A agent card structure
-// Based on the A2A specification
+// AgentCardData represents the A2A agent card structure.
+// Based on the A2A specification.
 type AgentCardData struct {
-	// Name is the human-readable name of the agent
+	// A human-readable name for the agent.
 	// +optional
 	Name string `json:"name,omitempty"`
 
-	// Description provides information about what the agent does
+	// A human-readable description of the agent, assisting users and other
+	// agents in understanding its purpose.
 	// +optional
 	Description string `json:"description,omitempty"`
 
-	// Version is the agent's version string
+	// The version of the agent.
 	// +optional
 	Version string `json:"version,omitempty"`
 
-	// URL is the endpoint where the A2A service can be reached
+	// The URL of the agent's endpoint.
 	// +optional
 	URL string `json:"url,omitempty"`
 
-	// Capabilities specifies supported A2A features
+	// A URL providing additional documentation about the agent.
+	// +optional
+	DocumentationURL string `json:"documentationUrl,omitempty"`
+
+	// A URL to an icon for the agent.
+	// +optional
+	IconURL string `json:"iconUrl,omitempty"`
+
+	// The service provider of the agent.
+	// +optional
+	Provider *AgentProvider `json:"provider,omitempty"`
+
+	// The A2A capability set supported by the agent.
 	// +optional
 	Capabilities *AgentCapabilities `json:"capabilities,omitempty"`
 
-	// DefaultInputModes are the default media types the agent accepts
+	// The set of interaction modes that the agent supports across all skills,
+	// defined as media types.
 	// +optional
 	DefaultInputModes []string `json:"defaultInputModes,omitempty"`
 
-	// DefaultOutputModes are the default media types the agent produces
+	// The media types supported as outputs from this agent.
 	// +optional
 	DefaultOutputModes []string `json:"defaultOutputModes,omitempty"`
 
-	// Skills is a list of skills/capabilities this agent offers
+	// Skills represent the abilities of an agent. A skill is a focused set of
+	// behaviors that the agent is likely to succeed at.
 	// +optional
 	Skills []AgentSkill `json:"skills,omitempty"`
 
-	// SupportsAuthenticatedExtendedCard indicates if the agent has an extended card
+	// Indicates if the agent supports providing an extended agent card when
+	// authenticated.
 	// +optional
 	SupportsAuthenticatedExtendedCard *bool `json:"supportsAuthenticatedExtendedCard,omitempty"`
 
-	// Signatures contains JWS signatures per A2A spec §8.4.2.
+	// JWS signatures per A2A spec §8.4.2.
 	// +optional
 	Signatures []AgentCardSignature `json:"signatures,omitempty"`
 }
@@ -208,28 +225,64 @@ type SignatureHeader struct {
 	Timestamp string `json:"timestamp,omitempty"`
 }
 
-// AgentCapabilities defines A2A feature support
+// AgentProvider describes the service provider of the agent.
+type AgentProvider struct {
+	// The name of the agent provider's organization.
+	// +optional
+	Organization string `json:"organization,omitempty"`
+
+	// A URL for the agent provider's website or relevant documentation.
+	// +optional
+	URL string `json:"url,omitempty"`
+}
+
+// AgentExtension describes an A2A protocol extension supported by the agent.
+type AgentExtension struct {
+	// The unique URI identifying the extension.
+	// +optional
+	URI string `json:"uri,omitempty"`
+
+	// A human-readable description of how this agent uses the extension.
+	// +optional
+	Description string `json:"description,omitempty"`
+
+	// If true, the client must understand and comply with the extension's
+	// requirements.
+	// +optional
+	Required *bool `json:"required,omitempty"`
+
+	// Extension-specific configuration parameters.
+	// +optional
+	Params map[string]apiextensionsv1.JSON `json:"params,omitempty"`
+}
+
+// AgentCapabilities defines the A2A capability set supported by the agent.
 type AgentCapabilities struct {
-	// Streaming indicates if the agent supports streaming responses
+	// Indicates if the agent supports streaming responses.
 	// +optional
 	Streaming *bool `json:"streaming,omitempty"`
 
-	// PushNotifications indicates if the agent supports push notifications
+	// Indicates if the agent supports sending push notifications for
+	// asynchronous task updates.
 	// +optional
 	PushNotifications *bool `json:"pushNotifications,omitempty"`
+
+	// A list of protocol extensions supported by the agent.
+	// +optional
+	Extensions []AgentExtension `json:"extensions,omitempty"`
 }
 
-// AgentSkill represents a skill offered by the agent
+// AgentSkill represents a skill offered by the agent.
 type AgentSkill struct {
 	// A unique identifier for the agent's skill.
 	// +optional
 	ID string `json:"id,omitempty"`
 
-	// Name is the identifier for this skill
+	// A human-readable name for the skill.
 	// +optional
 	Name string `json:"name,omitempty"`
 
-	// Description explains what this skill does
+	// A detailed description of the skill.
 	// +optional
 	Description string `json:"description,omitempty"`
 
@@ -241,37 +294,40 @@ type AgentSkill struct {
 	// +optional
 	Examples []string `json:"examples,omitempty"`
 
-	// InputModes are the media types this skill accepts
+	// The set of supported input media types for this skill, overriding the
+	// agent's defaults.
 	// +optional
 	InputModes []string `json:"inputModes,omitempty"`
 
-	// OutputModes are the media types this skill produces
+	// The set of supported output media types for this skill, overriding the
+	// agent's defaults.
 	// +optional
 	OutputModes []string `json:"outputModes,omitempty"`
 
-	// Parameters defines the parameters this skill accepts
+	// The parameters accepted by this skill.
 	// +optional
 	Parameters []SkillParameter `json:"parameters,omitempty"`
 }
 
-// SkillParameter defines a parameter that a skill accepts
+// SkillParameter defines a parameter accepted by a skill.
 type SkillParameter struct {
+	// The name of the parameter.
 	// +optional
 	Name string `json:"name,omitempty"`
 
-	// Type is the parameter type (e.g., "string", "number", "boolean", "object", "array")
+	// The type of the parameter (e.g., "string", "number", "boolean", "object", "array").
 	// +optional
 	Type string `json:"type,omitempty"`
 
-	// Description explains what this parameter is for
+	// A human-readable description of the parameter.
 	// +optional
 	Description string `json:"description,omitempty"`
 
-	// Required indicates if this parameter must be provided
+	// Indicates if this parameter must be provided.
 	// +optional
 	Required *bool `json:"required,omitempty"`
 
-	// Default is the default value for this parameter
+	// The default value for this parameter.
 	// +optional
 	Default string `json:"default,omitempty"`
 }

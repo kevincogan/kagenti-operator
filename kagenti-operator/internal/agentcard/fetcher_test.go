@@ -18,6 +18,7 @@ package agentcard
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -117,6 +119,175 @@ func newFakeScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
 	return s
+}
+
+func TestFetchA2ACard_WithProviderField(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cardJSON := `{
+		"name": "provider-agent",
+		"version": "2.0",
+		"url": "http://example.com",
+		"provider": {
+			"organization": "ACME Corp",
+			"url": "https://acme.example.com"
+		}
+	}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(cardJSON))
+	}))
+	defer server.Close()
+
+	result, err := NewFetcher().Fetch(context.Background(), A2AProtocol, server.URL, "", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.Provider).NotTo(BeNil())
+	g.Expect(result.Provider.Organization).To(Equal("ACME Corp"))
+	g.Expect(result.Provider.URL).To(Equal("https://acme.example.com"))
+}
+
+func TestFetchA2ACard_WithDocAndIconURLs(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cardJSON := `{
+		"name": "docs-agent",
+		"version": "1.0",
+		"url": "http://example.com",
+		"documentationUrl": "https://docs.example.com",
+		"iconUrl": "https://example.com/icon.png"
+	}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(cardJSON))
+	}))
+	defer server.Close()
+
+	result, err := NewFetcher().Fetch(context.Background(), A2AProtocol, server.URL, "", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.DocumentationURL).To(Equal("https://docs.example.com"))
+	g.Expect(result.IconURL).To(Equal("https://example.com/icon.png"))
+}
+
+func TestFetchA2ACard_WithExtensions(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cardJSON := `{
+		"name": "ext-agent",
+		"version": "1.0",
+		"url": "http://example.com",
+		"capabilities": {
+			"streaming": true,
+			"extensions": [
+				{
+					"uri": "urn:ext:logging",
+					"description": "Logging extension",
+					"required": true,
+					"params": {"level": "debug"}
+				}
+			]
+		}
+	}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(cardJSON))
+	}))
+	defer server.Close()
+
+	result, err := NewFetcher().Fetch(context.Background(), A2AProtocol, server.URL, "", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.Capabilities).NotTo(BeNil())
+	g.Expect(result.Capabilities.Extensions).To(HaveLen(1))
+	ext := result.Capabilities.Extensions[0]
+	g.Expect(ext.URI).To(Equal("urn:ext:logging"))
+	g.Expect(ext.Description).To(Equal("Logging extension"))
+	g.Expect(*ext.Required).To(BeTrue())
+	g.Expect(ext.Params).To(HaveKeyWithValue("level", apiextensionsv1.JSON{Raw: json.RawMessage(`"debug"`)}))
+}
+
+func TestFetchA2ACard_FullA2ACompatibility(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cardJSON := `{
+		"name": "full-agent",
+		"description": "A fully compatible A2A agent",
+		"version": "3.0",
+		"url": "http://example.com/agent",
+		"documentationUrl": "https://docs.example.com/full-agent",
+		"iconUrl": "https://example.com/full-agent/icon.png",
+		"provider": {
+			"organization": "Full Corp",
+			"url": "https://fullcorp.example.com"
+		},
+		"capabilities": {
+			"streaming": true,
+			"pushNotifications": false,
+			"extensions": [
+				{
+					"uri": "urn:ext:audit",
+					"description": "Audit trail",
+					"required": false,
+					"params": {"retention": "30d"}
+				},
+				{
+					"uri": "urn:ext:metrics",
+					"description": "Metrics collection"
+				}
+			]
+		},
+		"defaultInputModes": ["text", "application/json"],
+		"defaultOutputModes": ["text"],
+		"skills": [
+			{
+				"name": "summarize",
+				"description": "Summarizes text"
+			}
+		],
+		"supportsAuthenticatedExtendedCard": true
+	}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(cardJSON))
+	}))
+	defer server.Close()
+
+	result, err := NewFetcher().Fetch(context.Background(), A2AProtocol, server.URL, "", "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Core fields
+	g.Expect(result.Name).To(Equal("full-agent"))
+	g.Expect(result.Description).To(Equal("A fully compatible A2A agent"))
+	g.Expect(result.Version).To(Equal("3.0"))
+	g.Expect(result.URL).To(Equal("http://example.com/agent"))
+
+	// New fields
+	g.Expect(result.DocumentationURL).To(Equal("https://docs.example.com/full-agent"))
+	g.Expect(result.IconURL).To(Equal("https://example.com/full-agent/icon.png"))
+
+	// Provider
+	g.Expect(result.Provider).NotTo(BeNil())
+	g.Expect(result.Provider.Organization).To(Equal("Full Corp"))
+	g.Expect(result.Provider.URL).To(Equal("https://fullcorp.example.com"))
+
+	// Capabilities + extensions
+	g.Expect(result.Capabilities).NotTo(BeNil())
+	g.Expect(*result.Capabilities.Streaming).To(BeTrue())
+	g.Expect(*result.Capabilities.PushNotifications).To(BeFalse())
+	g.Expect(result.Capabilities.Extensions).To(HaveLen(2))
+
+	audit := result.Capabilities.Extensions[0]
+	g.Expect(audit.URI).To(Equal("urn:ext:audit"))
+	g.Expect(audit.Description).To(Equal("Audit trail"))
+	g.Expect(*audit.Required).To(BeFalse())
+	g.Expect(audit.Params).To(HaveKeyWithValue("retention", apiextensionsv1.JSON{Raw: json.RawMessage(`"30d"`)}))
+
+	metrics := result.Capabilities.Extensions[1]
+	g.Expect(metrics.URI).To(Equal("urn:ext:metrics"))
+	g.Expect(metrics.Description).To(Equal("Metrics collection"))
+	g.Expect(metrics.Required).To(BeNil())
+	g.Expect(metrics.Params).To(BeEmpty())
+
+	// Existing fields still work
+	g.Expect(result.DefaultInputModes).To(Equal([]string{"text", "application/json"}))
+	g.Expect(result.DefaultOutputModes).To(Equal([]string{"text"}))
+	g.Expect(result.Skills).To(HaveLen(1))
+	g.Expect(result.Skills[0].Name).To(Equal("summarize"))
+	g.Expect(*result.SupportsAuthenticatedExtendedCard).To(BeTrue())
 }
 
 func TestConfigMapFetcher_ConfigMapFound(t *testing.T) {
