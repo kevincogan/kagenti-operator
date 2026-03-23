@@ -54,6 +54,7 @@ type AgentCardSyncReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
 
 func (r *AgentCardSyncReconciler) ReconcileDeployment(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	syncLogger.V(1).Info("Reconciling Deployment for auto-sync", "namespacedName", req.NamespacedName)

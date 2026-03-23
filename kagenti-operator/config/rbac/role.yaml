@@ -102,6 +102,7 @@ rules:
   - apps
   resources:
   - deployments/finalizers
+  - statefulsets/finalizers
   verbs:
   - update
 - apiGroups:
