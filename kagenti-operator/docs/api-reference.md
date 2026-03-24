@@ -445,6 +445,15 @@ Configures observability for an AgentRuntime.
 | `Ready` | False | `ConfigHashError` | Failed to compute the config hash |
 | `Ready` | False | `ConfigApplyError` | Failed to apply labels/annotations to the workload |
 
+### Admission Validation
+
+A validating webhook prevents ownership conflicts:
+
+- **Duplicate targetRef rejection**: If an AgentRuntime CR already targets a given workload (same `apiVersion` + `kind` + `name`) in the same namespace, creating or updating another AgentRuntime to target the same workload is rejected at admission time.
+- **Fail-open**: If the webhook cannot list existing AgentRuntimes (e.g., API server error), creation is allowed to avoid blocking deployments.
+
+This prevents conflicting label updates where two AgentRuntime CRs with different `type` values (e.g., `agent` vs `tool`) would fight over the same workload's `kagenti.io/type` label.
+
 ### Examples
 
 #### Basic Agent Runtime
