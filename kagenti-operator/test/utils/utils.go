@@ -36,6 +36,9 @@ const (
 
 	certmanagerVersion = "v1.16.3"
 	certmanagerURLTmpl = "https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml"
+
+	spireCRDsChartVersion = "0.5.0"
+	spireChartVersion     = "0.28.3"
 )
 
 func warnError(err error) {
@@ -255,6 +258,7 @@ func InstallSpire(trustDomain string) error {
 
 	By("installing SPIRE CRDs")
 	cmd = exec.Command("helm", "install", "spire-crds", "spiffe/spire-crds",
+		"--version", spireCRDsChartVersion,
 		"-n", "spire-system",
 		"--create-namespace",
 		"--wait",
@@ -266,6 +270,7 @@ func InstallSpire(trustDomain string) error {
 
 	By("installing SPIRE Helm chart")
 	cmd = exec.Command("helm", "install", "spire", "spiffe/spire",
+		"--version", spireChartVersion,
 		"-n", "spire-system",
 		fmt.Sprintf("--set=global.spire.trustDomain=%s", trustDomain),
 		"--wait",
@@ -399,16 +404,19 @@ func PatchControllerArgs(namespace, deploy string, addArgs []string) (origArgs [
 	}
 
 	By(fmt.Sprintf("patching controller with args: %v", addArgs))
-	for _, arg := range addArgs {
-		patchJSON := fmt.Sprintf(`[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"%s"}]`, arg)
-		cmd = exec.Command("kubectl", "patch", "deployment", deploy,
-			"-n", namespace,
-			"--type=json",
-			fmt.Sprintf("-p=%s", patchJSON),
-		)
-		if _, err := Run(cmd); err != nil {
-			return origArgs, fmt.Errorf("failed to patch arg %q: %w", arg, err)
-		}
+	newArgs := append(origArgs, addArgs...)
+	argsJSON, jsonErr := json.Marshal(newArgs)
+	if jsonErr != nil {
+		return origArgs, fmt.Errorf("failed to marshal new args: %w", jsonErr)
+	}
+	patchJSON := fmt.Sprintf(`[{"op":"replace","path":"/spec/template/spec/containers/0/args","value":%s}]`, string(argsJSON))
+	cmd = exec.Command("kubectl", "patch", "deployment", deploy,
+		"-n", namespace,
+		"--type=json",
+		fmt.Sprintf("-p=%s", patchJSON),
+	)
+	if _, patchErr := Run(cmd); patchErr != nil {
+		return origArgs, fmt.Errorf("failed to patch args: %w", patchErr)
 	}
 
 	By("waiting for controller rollout after patch")
@@ -446,16 +454,44 @@ func RestoreControllerArgs(namespace, deploy string, origArgs []string) error {
 	return nil
 }
 
-// BuildAndLoadSignerImage builds and loads the signer image into Kind.
-func BuildAndLoadSignerImage(signerImg string) error {
-	By("building agentcard-signer image")
-	cmd := exec.Command("make", "build-signer", fmt.Sprintf("SIGNER_IMG=%s", signerImg))
+// DeployController installs CRDs and deploys the controller-manager.
+func DeployController(namespace, img string) error {
+	By("creating manager namespace")
+	cmd := exec.Command("kubectl", "create", "ns", namespace)
+	_, _ = Run(cmd) // ignore if already exists
+
+	By("labeling the namespace to enforce the restricted security policy")
+	cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		"pod-security.kubernetes.io/enforce=restricted")
 	if _, err := Run(cmd); err != nil {
-		return fmt.Errorf("failed to build signer image: %w", err)
+		return err
 	}
 
-	By("loading agentcard-signer image into Kind")
-	return LoadImageToKindClusterWithName(signerImg)
+	By("installing CRDs")
+	cmd = exec.Command("make", "install")
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+
+	By("deploying the controller-manager")
+	cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", img))
+	_, err := Run(cmd)
+	return err
+}
+
+// UndeployController undeploys the controller-manager and uninstalls CRDs.
+func UndeployController() {
+	By("undeploying the controller-manager")
+	cmd := exec.Command("make", "undeploy")
+	if _, err := Run(cmd); err != nil {
+		warnError(err)
+	}
+
+	By("uninstalling CRDs")
+	cmd = exec.Command("make", "uninstall")
+	if _, err := Run(cmd); err != nil {
+		warnError(err)
+	}
 }
 
 // UncommentCode searches for target in the file and remove the comment prefix

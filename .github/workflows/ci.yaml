@@ -60,10 +60,6 @@ jobs:
         run: kind create cluster
       - name: Set up Helm
         uses: azure/setup-helm@v4
-      - name: Install SPIRE CRDs
-        run: |
-          helm repo add spiffe https://spiffe.github.io/helm-charts-hardened/
-          helm repo update
       - name: Run e2e tests
         run: |
           go mod tidy

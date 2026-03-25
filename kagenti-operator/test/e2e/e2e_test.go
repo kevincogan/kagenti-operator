@@ -50,42 +50,19 @@ var _ = Describe("Manager", Ordered, func() {
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// and deploying the controller.
 	BeforeAll(func() {
-		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
-
-		By("labeling the namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
-			"pod-security.kubernetes.io/enforce=restricted")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
-
-		By("installing CRDs")
-		cmd = exec.Command("make", "install")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
-
-		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+		Expect(utils.DeployController(namespace, projectImage)).To(Succeed(), "Failed to deploy controller")
 	})
 
-	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
-	// and deleting the namespace.
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
 		_, _ = utils.Run(cmd)
 
-		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
+		By("cleaning up metrics ClusterRoleBinding")
+		cmd = exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName, "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 
-		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
+		utils.UndeployController()
 
 		By("removing manager namespace")
 		cmd = exec.Command("kubectl", "delete", "ns", namespace)
@@ -330,34 +307,17 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 	const controllerDeployment = "kagenti-operator-controller-manager"
 
 	BeforeAll(func() {
-		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", controllerNamespace)
-		_, _ = utils.Run(cmd) // ignore if already exists
-
-		By("labeling the namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", controllerNamespace,
-			"pod-security.kubernetes.io/enforce=restricted")
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred())
-
-		By("installing CRDs")
-		cmd = exec.Command("make", "install")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred())
-
-		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred())
+		Expect(utils.DeployController(controllerNamespace, projectImage)).To(Succeed(), "Failed to deploy controller")
 
 		By("waiting for controller-manager to be ready")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-				"-n", controllerNamespace, "-o", "jsonpath={.items[0].status.phase}")
+				"-n", controllerNamespace,
+				"-o", "go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}{{ .status.phase }}{{ end }}{{ end }}")
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("Running"))
-		}, 2*time.Minute, time.Second).Should(Succeed())
+			g.Expect(output).To(ContainSubstring("Running"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
 		By("waiting for webhook endpoint to be ready")
 		Eventually(func(g Gomega) {
@@ -367,11 +327,11 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).NotTo(BeEmpty(), "webhook endpoint not yet populated")
-		}, 2*time.Minute, time.Second).Should(Succeed())
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
 		By("creating test namespace with labels")
-		cmd = exec.Command("kubectl", "create", "ns", testNamespace)
-		_, err = utils.Run(cmd)
+		cmd := exec.Command("kubectl", "create", "ns", testNamespace)
+		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
@@ -390,13 +350,7 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 		cmd = exec.Command("kubectl", "delete", "clusterspiffeid", "e2e-agentcard-test", "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 
-		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
-
-		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
+		utils.UndeployController()
 	})
 
 	AfterEach(func() {
@@ -454,7 +408,7 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 					"-o", "jsonpath={.items[*].metadata.name}")
 				output, _ := utils.Run(cmd)
 				return output
-			}, 30*time.Second, 5*time.Second).ShouldNot(ContainSubstring("noproto-agent"))
+			}, 15*time.Second, 5*time.Second).ShouldNot(ContainSubstring("noproto-agent"))
 		})
 
 		It("should auto-create AgentCard for labelled workload", func() {
@@ -532,7 +486,6 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 				"--spire-trust-bundle-configmap-namespace=spire-system",
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(utils.WaitForRollout(controllerDeployment, controllerNamespace, 2*time.Minute)).To(Succeed())
 		})
 
 		AfterAll(func() {
@@ -540,7 +493,6 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 			if origArgs != nil {
 				err := utils.RestoreControllerArgs(controllerNamespace, controllerDeployment, origArgs)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(utils.WaitForRollout(controllerDeployment, controllerNamespace, 2*time.Minute)).To(Succeed())
 			}
 		})
 
@@ -554,7 +506,6 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 					"--signature-audit-mode=true",
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(utils.WaitForRollout(controllerDeployment, controllerNamespace, 2*time.Minute)).To(Succeed())
 			})
 
 			AfterAll(func() {
@@ -562,7 +513,6 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 				if auditOrigArgs != nil {
 					err := utils.RestoreControllerArgs(controllerNamespace, controllerDeployment, auditOrigArgs)
 					Expect(err).NotTo(HaveOccurred())
-					Expect(utils.WaitForRollout(controllerDeployment, controllerNamespace, 2*time.Minute)).To(Succeed())
 				}
 			})
 
@@ -572,11 +522,13 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(utils.WaitForDeploymentReady("audit-agent", testNamespace, 2*time.Minute)).To(Succeed())
 
-				By("creating AgentCard for audit-agent")
-				_, err = utils.KubectlApplyStdin(auditModeAgentCardFixture(), testNamespace)
-				Expect(err).NotTo(HaveOccurred())
+				By("updating auto-created AgentCard for audit-agent")
+				Eventually(func(g Gomega) {
+					_, applyErr := utils.KubectlApplyStdin(auditModeAgentCardFixture(), testNamespace)
+					g.Expect(applyErr).NotTo(HaveOccurred())
+				}, 30*time.Second, 2*time.Second).Should(Succeed())
 
-				cardName := "audit-agent-card"
+				cardName := "audit-agent-deployment-card"
 
 				By("verifying Synced=True (audit mode allows sync)")
 				Eventually(func(g Gomega) {

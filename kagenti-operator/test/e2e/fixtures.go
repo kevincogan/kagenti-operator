@@ -50,6 +50,7 @@ spec:
       containers:
         - name: echo
           image: docker.io/python:3.11-slim
+          imagePullPolicy: IfNotPresent
           command:
             - python3
             - -c
@@ -122,6 +123,7 @@ spec:
       containers:
         - name: pause
           image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -189,6 +191,7 @@ spec:
       containers:
         - name: echo
           image: docker.io/python:3.11-slim
+          imagePullPolicy: IfNotPresent
           command:
             - python3
             - -c
@@ -230,13 +233,17 @@ spec:
 `
 }
 
-// auditModeAgentCardFixture returns YAML for AgentCard targeting audit-agent (S5).
+// auditModeAgentCardFixture returns YAML for AgentCard targeting audit-agent.
+// Uses the auto-created card name so kubectl apply updates the existing card.
 func auditModeAgentCardFixture() string {
 	return `apiVersion: agent.kagenti.dev/v1alpha1
 kind: AgentCard
 metadata:
-  name: audit-agent-card
+  name: audit-agent-deployment-card
   namespace: ` + testNamespace + `
+  labels:
+    app.kubernetes.io/name: audit-agent
+    app.kubernetes.io/managed-by: kagenti-operator
 spec:
   targetRef:
     apiVersion: apps/v1
@@ -337,7 +344,7 @@ spec:
           type: RuntimeDefault
       initContainers:
         - name: sign-agentcard
-          image: ghcr.io/kagenti/kagenti-operator/agentcard-signer:latest
+          image: ghcr.io/kagenti/kagenti-operator/agentcard-signer:e2e-test
           imagePullPolicy: IfNotPresent
           env:
             - name: SPIFFE_ENDPOINT_SOCKET
@@ -380,6 +387,7 @@ spec:
       containers:
         - name: agent
           image: docker.io/python:3.11-slim
+          imagePullPolicy: IfNotPresent
           command: ["python3", "-m", "http.server", "8080", "--directory", "/app"]
           ports:
             - containerPort: 8080

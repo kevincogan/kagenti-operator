@@ -51,7 +51,7 @@ var (
 	projectImage = "example.com/kagenti-operator:v0.0.1"
 
 	// signerImage is the agentcard-signer init-container image
-	signerImage = "ghcr.io/kagenti/kagenti-operator/agentcard-signer:latest"
+	signerImage = "ghcr.io/kagenti/kagenti-operator/agentcard-signer:e2e-test"
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
