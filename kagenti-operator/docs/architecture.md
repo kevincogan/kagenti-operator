@@ -76,10 +76,9 @@ The Kagenti Operator is a Kubernetes controller that implements the [Operator Pa
 
 ### Supporting Components
 
-#### Webhook
-- Validates AgentCard resources
-- Ensures `targetRef` is set on AgentCards
-- Mutates resources with default values
+#### Webhooks
+- **AgentCard Validator**: Ensures `targetRef` is set on AgentCards. Rejects duplicate `targetRef` entries (prevents multiple AgentCards targeting the same workload in a namespace).
+- **AgentRuntime Validator**: Rejects duplicate `targetRef` entries (prevents multiple AgentRuntime CRs targeting the same workload in a namespace). Uses authoritative API server reads to eliminate informer cache-lag races.
 
 #### Signature Providers
 - **X5CProvider**: Validates `x5c` certificate chains against the SPIRE X.509 trust bundle and verifies JWS signatures using the leaf public key
@@ -103,6 +102,7 @@ graph TB
         SyncController[AgentCardSync Controller]
         RuntimeController[AgentRuntime Controller]
         CardCR -->|Validates| Webhook
+        RuntimeCR -->|Validates| Webhook
 
         Webhook -->|Valid CR| CardController
     end
