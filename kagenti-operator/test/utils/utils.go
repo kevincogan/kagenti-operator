@@ -202,7 +202,7 @@ func LoadImageToKindClusterWithName(name string) error {
 	// Fallback for podman: save image to archive, then load archive into Kind
 	_, _ = fmt.Fprintf(GinkgoWriter, "kind load docker-image failed, trying podman save fallback...\n")
 	archivePath := fmt.Sprintf("%s/kind-image-%d.tar", os.TempDir(), time.Now().UnixNano())
-	defer os.Remove(archivePath)
+	defer func() { _ = os.Remove(archivePath) }()
 
 	cmd = exec.Command("podman", "save", name, "-o", archivePath)
 	if _, saveErr := Run(cmd); saveErr != nil {
@@ -383,6 +383,13 @@ func WaitForRollout(name, namespace string, timeout time.Duration) error {
 	return err
 }
 
+func buildArgsPatch(argsJSON []byte) string {
+	const patchTmpl = `[{"op":"replace",` +
+		`"path":"/spec/template/spec/containers/0/args",` +
+		`"value":%s}]`
+	return fmt.Sprintf(patchTmpl, string(argsJSON))
+}
+
 // PatchControllerArgs patches controller deployment args with additional flags
 // and returns the original args for later restoration.
 func PatchControllerArgs(namespace, deploy string, addArgs []string) (origArgs []string, err error) {
@@ -409,7 +416,7 @@ func PatchControllerArgs(namespace, deploy string, addArgs []string) (origArgs [
 	if jsonErr != nil {
 		return origArgs, fmt.Errorf("failed to marshal new args: %w", jsonErr)
 	}
-	patchJSON := fmt.Sprintf(`[{"op":"replace","path":"/spec/template/spec/containers/0/args","value":%s}]`, string(argsJSON))
+	patchJSON := buildArgsPatch(argsJSON)
 	cmd = exec.Command("kubectl", "patch", "deployment", deploy,
 		"-n", namespace,
 		"--type=json",
@@ -436,7 +443,7 @@ func RestoreControllerArgs(namespace, deploy string, origArgs []string) error {
 		return fmt.Errorf("failed to marshal original args: %w", err)
 	}
 
-	patchJSON := fmt.Sprintf(`[{"op":"replace","path":"/spec/template/spec/containers/0/args","value":%s}]`, string(argsJSON))
+	patchJSON := buildArgsPatch(argsJSON)
 	cmd := exec.Command("kubectl", "patch", "deployment", deploy,
 		"-n", namespace,
 		"--type=json",
