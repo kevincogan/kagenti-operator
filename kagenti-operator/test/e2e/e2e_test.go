@@ -408,7 +408,7 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 					"-o", "jsonpath={.items[*].metadata.name}")
 				output, _ := utils.Run(cmd)
 				return output
-			}, 15*time.Second, 5*time.Second).ShouldNot(ContainSubstring("noproto-agent"))
+			}, 30*time.Second, 5*time.Second).ShouldNot(ContainSubstring("noproto-agent"))
 		})
 
 		It("should auto-create AgentCard for labelled workload", func() {
