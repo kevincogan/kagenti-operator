@@ -112,9 +112,28 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
+# Self-signed TLS for the validating webhook when running outside the cluster (controller-runtime
+# otherwise expects tls.crt/tls.key under $TMPDIR/k8s-webhook-server/serving-certs).
+WEBHOOK_CERT_DIR ?= $(CURDIR)/.run/webhook-certs
+
 .PHONY: run
-run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+run: manifests generate fmt vet ## Run a controller from your host (needs cluster + CRDs: make install).
+	@mkdir -p "$(WEBHOOK_CERT_DIR)"
+	@if [ ! -f "$(WEBHOOK_CERT_DIR)/tls.crt" ] || [ ! -f "$(WEBHOOK_CERT_DIR)/tls.key" ]; then \
+		command -v openssl >/dev/null 2>&1 || { \
+			echo "openssl not found: install it, or create tls.crt/tls.key under WEBHOOK_CERT_DIR and re-run"; \
+			echo "  WEBHOOK_CERT_DIR=$(WEBHOOK_CERT_DIR)"; \
+			exit 1; \
+		}; \
+		openssl req -x509 -newkey rsa:2048 -nodes \
+			-keyout "$(WEBHOOK_CERT_DIR)/tls.key" \
+			-out "$(WEBHOOK_CERT_DIR)/tls.crt" \
+			-days 365 \
+			-subj "/CN=localhost"; \
+	fi
+	go run ./cmd/main.go \
+		--webhook-cert-path="$(WEBHOOK_CERT_DIR)" \
+		--metrics-secure=false
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
