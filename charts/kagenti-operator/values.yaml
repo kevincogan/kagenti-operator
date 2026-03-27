@@ -95,11 +95,12 @@ signatureVerification:
   enforceNetworkPolicies: false
   # SPIRE trust domain (required when enabled)
   spireTrustDomain: ""
-  # SPIRE trust bundle ConfigMap (PEM from ZTWIM/SPIRE or SPIFFE JSON from BundlePublisher)
+  # Key within the SPIRE trust bundle ConfigMap. Matches the SPIRE hardened Helm chart default
+  # and the binary flag default. Override to "bundle.crt" only for older ZTWIM deployments.
   spireTrustBundle:
     configMapName: "spire-bundle"
     configMapNamespace: ""
-    configMapKey: "bundle.crt"
+    configMapKey: "bundle.spiffe"
     refreshInterval: "5m"
   # How far before SVID expiry to trigger proactive workload restart
   svidExpiryGracePeriod: "30m"
