@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/agent.kagenti.dev_agentcards.yaml
+- bases/agent.kagenti.dev_agentruntimes.yaml
 
 # +kubebuilder:scaffold:crdkustomizeresource
 
