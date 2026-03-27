@@ -58,15 +58,16 @@ func TestWorkloadWantsOperatorClientReg(t *testing.T) {
 	}
 }
 
-func TestInjectOperatorClientRegAnnotation(t *testing.T) {
+func TestInjectKeycloakClientCredentialsAnnotation(t *testing.T) {
 	pt := &corev1.PodTemplateSpec{}
-	if !injectOperatorClientRegAnnotation(pt, "kagenti-opreg-deadbeef") {
+	secretName := "kagenti-keycloak-client-credentials-deadbeefcafe4242"
+	if !injectKeycloakClientCredentialsAnnotation(pt, secretName) {
 		t.Fatal("expected change")
 	}
-	if pt.Annotations[AnnotationClientRegistrationSecretName] != "kagenti-opreg-deadbeef" {
+	if pt.Annotations[AnnotationKeycloakClientSecretName] != secretName {
 		t.Fatalf("annotation: %v", pt.Annotations)
 	}
-	if injectOperatorClientRegAnnotation(pt, "kagenti-opreg-deadbeef") {
+	if injectKeycloakClientCredentialsAnnotation(pt, secretName) {
 		t.Fatal("expected no change")
 	}
 }

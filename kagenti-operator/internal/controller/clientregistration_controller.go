@@ -41,11 +41,11 @@ const (
 	keycloakAdminSecret       = "keycloak-admin-secret"
 
 	// LabelClientRegistrationInject opts a workload out of webhook-injected client-registration;
-	// the operator controller then registers the client and sets AnnotationClientRegistrationSecretName.
+	// the operator controller then registers the client and sets AnnotationKeycloakClientSecretName.
 	LabelClientRegistrationInject = "kagenti.io/client-registration-inject"
 
-	// AnnotationClientRegistrationSecretName must match kagenti-webhook injector.AnnotationClientRegistrationSecretName.
-	AnnotationClientRegistrationSecretName = "kagenti.io/client-registration-secret-name"
+	// AnnotationKeycloakClientSecretName must match kagenti-webhook injector.AnnotationKeycloakClientSecretName.
+	AnnotationKeycloakClientSecretName = "kagenti.io/keycloak-client-credentials-secret-name"
 )
 
 // ClientRegistrationReconciler registers OAuth clients in Keycloak and patches agent workloads that
@@ -96,7 +96,7 @@ func (r *ClientRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.R
 					if err := r.Get(ctx, req.NamespacedName, d); err != nil {
 						return err
 					}
-					if !injectOperatorClientRegAnnotation(&d.Spec.Template, operatorClientRegSecretName(d.Namespace, d.Name)) {
+					if !injectKeycloakClientCredentialsAnnotation(&d.Spec.Template, keycloakClientCredentialsSecretName(d.Namespace, d.Name)) {
 						return nil
 					}
 					return r.Update(ctx, d)
@@ -121,7 +121,7 @@ func (r *ClientRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.R
 				if err := r.Get(ctx, req.NamespacedName, s); err != nil {
 					return err
 				}
-				if !injectOperatorClientRegAnnotation(&s.Spec.Template, operatorClientRegSecretName(s.Namespace, s.Name)) {
+					if !injectKeycloakClientCredentialsAnnotation(&s.Spec.Template, keycloakClientCredentialsSecretName(s.Namespace, s.Name)) {
 					return nil
 				}
 				return r.Update(ctx, s)
@@ -139,7 +139,7 @@ func (r *ClientRegistrationReconciler) reconcileOne(
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	labels := template.Labels
-	if reason := operatorClientRegSkipReason(labels, injectTools); reason != "" {
+	if reason := keycloakClientCredentialsSkipReason(labels, injectTools); reason != "" {
 		logger.Info("skipping operator client registration for workload",
 			"namespace", owner.GetNamespace(),
 			"workload", workloadName,
@@ -219,7 +219,7 @@ func (r *ClientRegistrationReconciler) reconcileOne(
 			"clientId", clientID)
 	}
 
-	secretName := operatorClientRegSecretName(ns, workloadName)
+	secretName := keycloakClientCredentialsSecretName(ns, workloadName)
 	if err := r.ensureClientCredentialsSecret(ctx, owner, secretName, clientID, clientSecret); err != nil {
 		logger.Error(err, "ensure client credentials secret")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -235,20 +235,20 @@ func (r *ClientRegistrationReconciler) reconcileOne(
 	return ctrl.Result{}, nil
 }
 
-func injectOperatorClientRegAnnotation(template *corev1.PodTemplateSpec, secretName string) bool {
-	if template.Annotations != nil && template.Annotations[AnnotationClientRegistrationSecretName] == secretName {
+func injectKeycloakClientCredentialsAnnotation(template *corev1.PodTemplateSpec, secretName string) bool {
+	if template.Annotations != nil && template.Annotations[AnnotationKeycloakClientSecretName] == secretName {
 		return false
 	}
 	if template.Annotations == nil {
 		template.Annotations = map[string]string{}
 	}
-	template.Annotations[AnnotationClientRegistrationSecretName] = secretName
+	template.Annotations[AnnotationKeycloakClientSecretName] = secretName
 	return true
 }
 
-// operatorClientRegSkipReason returns a non-empty human-readable reason when this controller should
+// keycloakClientCredentialsSkipReason returns a non-empty human-readable reason when this controller should
 // not process the workload; empty string means reconcile should continue.
-func operatorClientRegSkipReason(labels map[string]string, injectTools bool) string {
+func keycloakClientCredentialsSkipReason(labels map[string]string, injectTools bool) string {
 	if labels == nil {
 		return "pod template has no labels"
 	}
@@ -273,7 +273,7 @@ func operatorClientRegSkipReason(labels map[string]string, injectTools bool) str
 }
 
 func workloadWantsOperatorClientReg(labels map[string]string, injectTools bool) bool {
-	return operatorClientRegSkipReason(labels, injectTools) == ""
+	return keycloakClientCredentialsSkipReason(labels, injectTools) == ""
 }
 
 type authbridgeConfig struct {
@@ -381,9 +381,9 @@ func resolveKeycloakClientID(namespace, workloadName, serviceAccount string, spi
 	return fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", trustDomain, namespace, sa), nil
 }
 
-func operatorClientRegSecretName(namespace, workload string) string {
-	sum := sha256.Sum256([]byte(namespace + "\000" + workload + "\000kagenti-operator-clientreg"))
-	return "kagenti-opreg-" + hex.EncodeToString(sum[:8])
+func keycloakClientCredentialsSecretName(namespace, workload string) string {
+	sum := sha256.Sum256([]byte(namespace + "\000" + workload + "\000kagenti-keycloak-client-credentials"))
+	return "kagenti-keycloak-client-credentials-" + hex.EncodeToString(sum[:8])
 }
 
 func (r *ClientRegistrationReconciler) ensureClientCredentialsSecret(ctx context.Context, owner client.Object, secretName, clientID, clientSecret string) error {
