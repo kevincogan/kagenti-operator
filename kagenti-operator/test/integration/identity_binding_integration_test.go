@@ -116,7 +116,8 @@ func (p *mockSignatureProvider) VerifySignature(_ context.Context, _ *agentv1alp
 	}, nil
 }
 
-func (p *mockSignatureProvider) Name() string { return "mock" }
+func (p *mockSignatureProvider) Name() string      { return "mock" }
+func (p *mockSignatureProvider) BundleHash() string { return "" }
 
 func TestIdentityBindingIntegration(t *testing.T) {
 	ctx := context.Background()
@@ -140,16 +141,16 @@ func testMatchingBindingEvaluation(t *testing.T) {
 	t.Log("========================================")
 
 	// Create Deployment with agent labels
-	deployment := createTestDeployment(t, ctx, deploymentName, saName, 1)
+	deployment := createTestDeployment(t, ctx, testNamespace, deploymentName, saName, 1)
 	defer deleteResource(ctx, deployment)
 
 	// Create Service
-	service := createTestService(t, ctx, deploymentName)
+	service := createTestService(t, ctx, testNamespace, deploymentName)
 	defer deleteResource(ctx, service)
 
 	// Create AgentCard with matching SPIFFE ID using targetRef
 	expectedSpiffeID := fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", trustDomain, testNamespace, saName)
-	agentCard := createTestAgentCard(t, ctx, cardName, deploymentName, false)
+	agentCard := createTestAgentCard(t, ctx, testNamespace, cardName, deploymentName, trustDomain, false)
 	defer deleteResource(ctx, agentCard)
 
 	// Create and run AgentCard reconciler with a mock signature provider that
@@ -213,15 +214,15 @@ func testNonMatchingBindingEvaluation(t *testing.T) {
 	t.Log("========================================")
 
 	// Create Deployment with agent labels
-	deployment := createTestDeployment(t, ctx, deploymentName, saName, 1)
+	deployment := createTestDeployment(t, ctx, testNamespace, deploymentName, saName, 1)
 	defer deleteResource(ctx, deployment)
 
 	// Create Service
-	service := createTestService(t, ctx, deploymentName)
+	service := createTestService(t, ctx, testNamespace, deploymentName)
 	defer deleteResource(ctx, service)
 
 	// Create AgentCard with NON-matching SPIFFE ID in allowlist using targetRef
-	agentCard := createTestAgentCard(t, ctx, cardName, deploymentName, false)
+	agentCard := createTestAgentCard(t, ctx, testNamespace, cardName, deploymentName, trustDomain, false)
 	defer deleteResource(ctx, agentCard)
 
 	// The workload's actual SPIFFE ID (from mock provider) does NOT match the allowlist
@@ -274,11 +275,12 @@ func testNonMatchingBindingEvaluation(t *testing.T) {
 
 // Helper functions
 
-func createTestService(t *testing.T, ctx context.Context, name string) *corev1.Service {
+func createTestService(t *testing.T, ctx context.Context, ns, name string) *corev1.Service {
+	t.Helper()
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: testNamespace,
+			Namespace: ns,
 		},
 		Spec: corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{
@@ -297,11 +299,12 @@ func createTestService(t *testing.T, ctx context.Context, name string) *corev1.S
 	return service
 }
 
-func createTestAgentCard(t *testing.T, ctx context.Context, name, deploymentName string, strict bool) *agentv1alpha1.AgentCard {
+func createTestAgentCard(t *testing.T, ctx context.Context, ns, name, deploymentName, domain string, strict bool) *agentv1alpha1.AgentCard {
+	t.Helper()
 	agentCard := &agentv1alpha1.AgentCard{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: testNamespace,
+			Namespace: ns,
 		},
 		Spec: agentv1alpha1.AgentCardSpec{
 			SyncPeriod: "30s",
@@ -311,7 +314,7 @@ func createTestAgentCard(t *testing.T, ctx context.Context, name, deploymentName
 				Name:       deploymentName,
 			},
 			IdentityBinding: &agentv1alpha1.IdentityBinding{
-				TrustDomain: trustDomain,
+				TrustDomain: domain,
 				Strict:      strict,
 			},
 		},
@@ -326,7 +329,8 @@ func createTestAgentCard(t *testing.T, ctx context.Context, name, deploymentName
 	return agentCard
 }
 
-func createTestDeployment(t *testing.T, ctx context.Context, name, saName string, replicas int32) *appsv1.Deployment {
+func createTestDeployment(t *testing.T, ctx context.Context, ns, name, saName string, replicas int32) *appsv1.Deployment {
+	t.Helper()
 	labels := map[string]string{
 		"app.kubernetes.io/name":  name,
 		"kagenti.io/type":         "agent",
@@ -335,7 +339,7 @@ func createTestDeployment(t *testing.T, ctx context.Context, name, saName string
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: testNamespace,
+			Namespace: ns,
 			Labels:    labels,
 		},
 		Spec: appsv1.DeploymentSpec{
