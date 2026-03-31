@@ -9,8 +9,6 @@ package keycloak
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +18,7 @@ import (
 const tokenCacheSkew = 60 * time.Second
 
 // CachedAdminTokenProvider caches Keycloak admin password-grant tokens keyed by base URL and
-// credentials so frequent reconciles do not issue a new token request every time.
+// username so frequent reconciles do not issue a new token request every time.
 type CachedAdminTokenProvider struct {
 	mu      sync.Mutex
 	entries map[string]cachedAdminTokenEntry
@@ -31,15 +29,14 @@ type cachedAdminTokenEntry struct {
 	expiresAt time.Time
 }
 
-func adminTokenCacheKey(baseURL, username, password string) string {
+func adminTokenCacheKey(baseURL, username string) string {
 	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	sum := sha256.Sum256([]byte(base + "\x00" + username + "\x00" + password))
-	return hex.EncodeToString(sum[:])
+	return base + "\x00" + username
 }
 
 // Token returns a valid admin access token, reusing the cache when the token is not near expiry.
 func (p *CachedAdminTokenProvider) Token(ctx context.Context, a *Admin, adminUser, adminPass string) (string, error) {
-	key := adminTokenCacheKey(a.BaseURL, adminUser, adminPass)
+	key := adminTokenCacheKey(a.BaseURL, adminUser)
 	now := time.Now()
 
 	p.mu.Lock()

@@ -86,9 +86,9 @@ func TestCachedAdminTokenProvider_refreshNearExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Force expiry inside skew window: cached expiresAt is now+90s; skew is 60s, so at now+31s we refresh.
-	e := cache.entries[adminTokenCacheKey(srv.URL, "u", "p")]
+	e := cache.entries[adminTokenCacheKey(srv.URL, "u")]
 	e.expiresAt = time.Now().Add(30 * time.Second)
-	cache.entries[adminTokenCacheKey(srv.URL, "u", "p")] = e
+	cache.entries[adminTokenCacheKey(srv.URL, "u")] = e
 
 	if _, err := cache.Token(ctx, a, "u", "p"); err != nil {
 		t.Fatal(err)
