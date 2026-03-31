@@ -12,14 +12,14 @@ import (
 func TestCachedAdminTokenProvider_Token(t *testing.T) {
 	var tokenCalls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/realms/master/protocol/openid-connect/token" {
+		if r.URL.Path != testMasterRealmTokenPath {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		tokenCalls++
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"access_token": "tok",
-			"expires_in":     3600,
+			"expires_in":   3600,
 		})
 	}))
 	defer srv.Close()
@@ -46,7 +46,7 @@ func TestCachedAdminTokenProvider_differentCredentials(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"access_token": "tok",
-			"expires_in":     3600,
+			"expires_in":   3600,
 		})
 	}))
 	defer srv.Close()
@@ -73,7 +73,7 @@ func TestCachedAdminTokenProvider_refreshNearExpiry(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"access_token": "tok",
-			"expires_in":     90,
+			"expires_in":   90,
 		})
 	}))
 	defer srv.Close()

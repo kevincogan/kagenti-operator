@@ -13,16 +13,16 @@ import (
 
 func inSyncClientRep() map[string]interface{} {
 	return map[string]interface{}{
-		"id":                          "uuid-1",
-		"clientId":                    "ns/workload",
-		"name":                        "ns/workload",
-		"standardFlowEnabled":         true,
-		"directAccessGrantsEnabled":   true,
-		"serviceAccountsEnabled":      true,
-		"fullScopeAllowed":            false,
-		"publicClient":                false,
-		"clientAuthenticatorType":     "client-secret",
-		"attributes":                  map[string]interface{}{"standard.token.exchange.enabled": []interface{}{"false"}},
+		"id":                        "uuid-1",
+		"clientId":                  "ns/workload",
+		"name":                      "ns/workload",
+		"standardFlowEnabled":       true,
+		"directAccessGrantsEnabled": true,
+		"serviceAccountsEnabled":    true,
+		"fullScopeAllowed":          false,
+		"publicClient":              false,
+		"clientAuthenticatorType":   "client-secret",
+		"attributes":                map[string]interface{}{"standard.token.exchange.enabled": []interface{}{"false"}},
 	}
 }
 
@@ -30,7 +30,7 @@ func TestAdmin_RegisterOrFetchClient(t *testing.T) {
 	var tokenCalls, listCalls, getCalls, createCalls, putCalls, secretCalls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/realms/master/protocol/openid-connect/token":
+		case r.URL.Path == testMasterRealmTokenPath:
 			tokenCalls++
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "t"})
@@ -79,7 +79,7 @@ func TestAdmin_RegisterOrFetchClient_updatesDrift(t *testing.T) {
 	var getCalls, putCalls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/realms/master/protocol/openid-connect/token":
+		case r.URL.Path == testMasterRealmTokenPath:
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "t"})
 		case strings.HasPrefix(r.URL.Path, "/admin/realms/kagenti/clients") && r.Method == http.MethodGet && r.URL.Query().Get("clientId") != "":

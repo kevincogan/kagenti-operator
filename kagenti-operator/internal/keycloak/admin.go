@@ -92,7 +92,7 @@ func (a *Admin) adminToken(ctx context.Context, username, password string) (stri
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return "", time.Time{}, fmt.Errorf("keycloak token: status %d: %s", resp.StatusCode, truncate(body, 512))
@@ -208,7 +208,7 @@ func (a *Admin) findClientUUID(ctx context.Context, token, realm, clientID strin
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("keycloak list clients: status %d: %s", resp.StatusCode, truncate(body, 512))
@@ -246,7 +246,7 @@ func (a *Admin) createClient(ctx context.Context, token, realm string, rep *keyc
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusCreated {
 		loc := resp.Header.Get("Location")
 		if loc != "" {
@@ -298,7 +298,7 @@ func (a *Admin) getClientRepresentationMap(ctx context.Context, token, realm, in
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("keycloak get client: status %d: %s", resp.StatusCode, truncate(body, 512))
@@ -433,7 +433,7 @@ func (a *Admin) updateClient(ctx context.Context, token, realm, internalUUID str
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
 		return nil
 	}
@@ -454,7 +454,7 @@ func (a *Admin) readClientSecret(ctx context.Context, token, realm, internalUUID
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("keycloak client secret: status %d: %s", resp.StatusCode, truncate(body, 512))

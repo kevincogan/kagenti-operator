@@ -208,16 +208,16 @@ func startTestKeycloakServer(t *testing.T) *httptest.Server {
 	// Matches keycloak.RegisterOrFetchClientWithToken defaults for the happy-path deployment:
 	// client ID test-ns/my-dep, client-secret auth, token exchange on (AuthBridge omits KEYCLOAK_TOKEN_EXCHANGE_ENABLED).
 	inSyncClientRep := map[string]any{
-		"id":                          "uuid-1",
-		"clientId":                    "test-ns/my-dep",
-		"name":                        "test-ns/my-dep",
-		"standardFlowEnabled":         true,
-		"directAccessGrantsEnabled":   true,
-		"serviceAccountsEnabled":      true,
-		"fullScopeAllowed":            false,
-		"publicClient":                false,
-		"clientAuthenticatorType":     "client-secret",
-		"attributes":                  map[string]any{"standard.token.exchange.enabled": []any{"true"}},
+		"id":                        "uuid-1",
+		"clientId":                  "test-ns/my-dep",
+		"name":                      "test-ns/my-dep",
+		"standardFlowEnabled":       true,
+		"directAccessGrantsEnabled": true,
+		"serviceAccountsEnabled":    true,
+		"fullScopeAllowed":          false,
+		"publicClient":              false,
+		"clientAuthenticatorType":   "client-secret",
+		"attributes":                map[string]any{"standard.token.exchange.enabled": []any{"true"}},
 	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

@@ -110,7 +110,8 @@ func main() {
 	flag.BoolVar(&enforceNetworkPolicies, "enforce-network-policies", false,
 		"Create NetworkPolicies to restrict traffic for agents with unverified signatures")
 	flag.BoolVar(&enableOperatorClientRegistration, "enable-operator-client-registration", false,
-		"Reconcile Keycloak client registration for agent/tool workloads unless kagenti.io/client-registration-inject=true (legacy sidecar)")
+		"Reconcile Keycloak client registration for agent/tool workloads unless "+
+			"kagenti.io/client-registration-inject=true (legacy sidecar)")
 
 	flag.StringVar(&spireTrustDomain, "spire-trust-domain", "",
 		"SPIRE trust domain for identity binding (e.g. 'example.org')")

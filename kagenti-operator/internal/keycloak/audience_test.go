@@ -21,7 +21,7 @@ func TestEnsureAudienceScope(t *testing.T) {
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
-		case path == "/realms/master/protocol/openid-connect/token":
+		case path == testMasterRealmTokenPath:
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "tok"})
 		case path == "/admin/realms/kagenti/client-scopes" && r.Method == http.MethodGet:

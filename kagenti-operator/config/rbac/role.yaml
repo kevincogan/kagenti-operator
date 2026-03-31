@@ -30,12 +30,6 @@ rules:
   - patch
   - update
   - watch
-# Secrets: the manager uses a single ClusterRole + ClusterRoleBinding. Kubernetes RBAC cannot express
-# "Secrets only in these namespaces" in one cluster-scoped rule. ClientRegistration must read
-# keycloak-admin-secret and reconcile operator credential Secrets in whatever namespace hosts each
-# matched Deployment/StatefulSet; those namespaces are not fixed at operator install time.
-# Narrower options exist (per-namespace RoleBinding to a dedicated ClusterRole, OPA/Gatekeeper, etc.)
-# but are operationally heavier. See docs/operator-managed-client-registration.md (RBAC subsection).
 - apiGroups:
   - ""
   resources:
