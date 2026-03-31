@@ -22,6 +22,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const (
+	clientRegistrationTestNamespace      = "test-ns"
+	clientRegistrationTestDeploymentName = "my-dep"
+)
+
 func TestWorkloadWantsOperatorClientReg(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -153,10 +158,11 @@ func clusterFeatureGatesConfigMap(clientRegistration bool) *corev1.ConfigMap {
 	}
 }
 
-func testDeploymentForClientReg(ns, name string) *appsv1.Deployment {
+func testDeploymentForClientReg() *appsv1.Deployment {
+	name := clientRegistrationTestDeploymentName
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: ns,
+			Namespace: clientRegistrationTestNamespace,
 			Name:      name,
 		},
 		Spec: appsv1.DeploymentSpec{
@@ -249,11 +255,7 @@ func startTestKeycloakServer(t *testing.T) *httptest.Server {
 }
 
 func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
-	const (
-		workNs  = "test-ns"
-		depName = "my-dep"
-	)
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: workNs, Name: depName}}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: clientRegistrationTestNamespace, Name: clientRegistrationTestDeploymentName}}
 	requeue := 30 * time.Second
 	ctx := context.Background()
 
@@ -277,7 +279,7 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 			name: "feature gates disable client registration",
 			objs: []client.Object{
 				clusterFeatureGatesConfigMap(false),
-				testDeploymentForClientReg(workNs, depName),
+				testDeploymentForClientReg(),
 			},
 			check: func(t *testing.T, c client.Client) {
 				dep := &appsv1.Deployment{}
@@ -301,7 +303,7 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 			name: "missing authbridge config waits with requeue",
 			objs: []client.Object{
 				clusterFeatureGatesConfigMap(true),
-				testDeploymentForClientReg(workNs, depName),
+				testDeploymentForClientReg(),
 			},
 			wantRequeue: requeue,
 		},
@@ -309,8 +311,8 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 			name: "missing keycloak admin secret waits with requeue",
 			objs: []client.Object{
 				clusterFeatureGatesConfigMap(true),
-				testDeploymentForClientReg(workNs, depName),
-				authbridgeConfigMapForTest(workNs, "https://keycloak.example"),
+				testDeploymentForClientReg(),
+				authbridgeConfigMapForTest(clientRegistrationTestNamespace, "https://keycloak.example"),
 			},
 			wantRequeue: requeue,
 		},
@@ -343,12 +345,12 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 		defer srv.Close()
 
 		scheme := clientRegistrationTestScheme(t)
-		dep := testDeploymentForClientReg(workNs, depName)
+		dep := testDeploymentForClientReg()
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 			clusterFeatureGatesConfigMap(true),
 			dep,
-			authbridgeConfigMapForTest(workNs, srv.URL),
-			keycloakAdminSecretForTest(workNs),
+			authbridgeConfigMapForTest(clientRegistrationTestNamespace, srv.URL),
+			keycloakAdminSecretForTest(clientRegistrationTestNamespace),
 		).Build()
 		r := &ClientRegistrationReconciler{Client: c, Scheme: scheme}
 		res, err := r.Reconcile(ctx, req)
@@ -356,7 +358,7 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 			t.Fatalf("got (%v, %v), want (zero Result, nil)", res, err)
 		}
 
-		secretName := keycloakClientCredentialsSecretName(workNs, depName)
+		secretName := keycloakClientCredentialsSecretName(clientRegistrationTestNamespace, clientRegistrationTestDeploymentName)
 		got := &appsv1.Deployment{}
 		if err := c.Get(ctx, req.NamespacedName, got); err != nil {
 			t.Fatal(err)
@@ -366,7 +368,7 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 		}
 
 		sec := &corev1.Secret{}
-		secKey := types.NamespacedName{Namespace: workNs, Name: secretName}
+		secKey := types.NamespacedName{Namespace: clientRegistrationTestNamespace, Name: secretName}
 		if err := c.Get(ctx, secKey, sec); err != nil {
 			t.Fatal(err)
 		}
@@ -379,7 +381,7 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 		if clientSecret == "" && sec.StringData != nil {
 			clientSecret = sec.StringData["client-secret.txt"]
 		}
-		if clientID != workNs+"/"+depName {
+		if clientID != clientRegistrationTestNamespace+"/"+clientRegistrationTestDeploymentName {
 			t.Fatalf("client-id: %q (secret %#v)", clientID, sec)
 		}
 		if clientSecret != "client-secret-value" {

@@ -120,7 +120,7 @@ func (a *Admin) findClientScopeIDByName(ctx context.Context, token, realm, name 
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("keycloak list client-scopes: status %d: %s", resp.StatusCode, truncate(body, 512))
@@ -155,7 +155,7 @@ func (a *Admin) createClientScope(ctx context.Context, token, realm string, rep 
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusCreated {
 		if loc := resp.Header.Get("Location"); loc != "" {
 			if id := pathLastSegment(loc); id != "" {
@@ -201,7 +201,7 @@ func (a *Admin) ensureAudienceMapper(ctx context.Context, token, realm, scopeID,
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusConflict {
 		return nil
 	}
@@ -236,7 +236,7 @@ func (a *Admin) putNoBodyExpectSuccess(ctx context.Context, token, endpoint stri
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// 204 success; 409 often means already linked; 404 can mean already removed / wrong id — ignore like Python prints.
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusConflict {
 		return nil
