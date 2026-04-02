@@ -33,13 +33,13 @@ import (
 
 const (
 	// ClusterDefaultsConfigMapName is the ConfigMap containing platform-wide webhook defaults.
-	ClusterDefaultsConfigMapName = "kagenti-webhook-defaults"
+	ClusterDefaultsConfigMapName = "kagenti-platform-config"
 
 	// ClusterFeatureGatesConfigMapName is the ConfigMap containing feature gate settings.
-	ClusterFeatureGatesConfigMapName = "kagenti-webhook-feature-gates"
+	ClusterFeatureGatesConfigMapName = "kagenti-feature-gates"
 
 	// ClusterDefaultsNamespace is the namespace where cluster-level ConfigMaps live.
-	ClusterDefaultsNamespace = "kagenti-webhook-system"
+	ClusterDefaultsNamespace = "kagenti-system"
 
 	// LabelNamespaceDefaults identifies namespace-level defaults ConfigMaps.
 	LabelNamespaceDefaults = "kagenti.io/defaults"
@@ -93,7 +93,7 @@ func ComputeDefaultsOnlyHash(ctx context.Context, c client.Reader, namespace str
 }
 
 // resolveConfig merges the three configuration layers:
-// 1. Cluster defaults (ConfigMaps in kagenti-webhook-system)
+// 1. Cluster defaults (ConfigMaps in kagenti-system)
 // 2. Namespace defaults (ConfigMap with kagenti.io/defaults=true label)
 // 3. AgentRuntime CR spec (highest priority)
 func resolveConfig(ctx context.Context, c client.Reader, namespace string, spec *agentv1alpha1.AgentRuntimeSpec) (resolvedConfig, []string) {

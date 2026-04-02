@@ -9,7 +9,7 @@ import (
 func CompiledDefaults() *PlatformConfig {
 	return &PlatformConfig{
 		// Compiled defaults are overridden at runtime by the platform-config
-		// ConfigMap (kagenti-webhook-defaults). These serve as fallbacks only.
+		// ConfigMap (kagenti-platform-config). These serve as fallbacks only.
 		Images: ImageConfig{
 			EnvoyProxy:         "ghcr.io/kagenti/kagenti-extensions/envoy-with-processor:latest",
 			ProxyInit:          "ghcr.io/kagenti/kagenti-extensions/proxy-init:latest",

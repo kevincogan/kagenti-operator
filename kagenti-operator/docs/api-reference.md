@@ -402,9 +402,9 @@ The controller merges configuration from three layers (highest priority wins):
 
 1. **AgentRuntime CR spec** — per-workload overrides (trust domain, trace endpoint, etc.)
 2. **Namespace defaults** — ConfigMap with `kagenti.io/defaults=true` label in the workload's namespace
-3. **Cluster defaults** — `kagenti-webhook-defaults` ConfigMap in `kagenti-webhook-system`
+3. **Cluster defaults** — `kagenti-platform-config` ConfigMap in `kagenti-system`
 
-> **Note:** Feature gates (`kagenti-webhook-feature-gates`) are platform-wide policy and are **not** overrideable by namespace defaults or AgentRuntime CRs. They control which AuthBridge components (envoy proxy, SPIFFE helper, client registration) are enabled globally.
+> **Note:** Feature gates (`kagenti-feature-gates`) are platform-wide policy and are **not** overrideable by namespace defaults or AgentRuntime CRs. They control which AuthBridge components (envoy proxy, SPIFFE helper, client registration) are enabled globally.
 
 ### Spec Fields
 

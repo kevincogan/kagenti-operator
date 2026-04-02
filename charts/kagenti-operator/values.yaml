@@ -4,14 +4,17 @@ controllerManager:
   container:
     image:
       repository: ghcr.io/kagenti/kagenti-operator/kagenti-operator
-      tag: latest
-      pullPolicy: Always
+      tag: __PLACEHOLDER__
+      pullPolicy: IfNotPresent
     args:
       - "--leader-elect"
       - "--metrics-bind-address=:8443"
       - "--health-probe-bind-address=:8081"
       - "--webhook-cert-path=/tmp/k8s-webhook-server/serving-certs"
-    cmd: /manager
+      - "--config-path=/etc/kagenti/config.yaml"
+      - "--feature-gates-path=/etc/kagenti/feature-gates/feature-gates.yaml"
+      - "--enable-client-registration=true"
+    cmd: /ko-app/cmd
     resources:
       limits:
         cpu: 500m
@@ -133,7 +136,7 @@ defaults:
   images:
     envoyProxy: ghcr.io/kagenti/kagenti-extensions/envoy-with-processor:latest
     proxyInit: ghcr.io/kagenti/kagenti-extensions/proxy-init:latest
-    spiffeHelper: ghcr.io/spiffe/spiffe-helper:0.11.0
+    spiffeHelper: ghcr.io/kagenti/kagenti-extensions/spiffe-helper:latest
     clientRegistration: ghcr.io/kagenti/kagenti-extensions/client-registration:latest
     authbridge: ghcr.io/kagenti/kagenti-extensions/authbridge:latest
     pullPolicy: IfNotPresent
@@ -181,8 +184,8 @@ defaults:
         cpu: 100m
         memory: 128Mi
       limits:
-        cpu: 500m
-        memory: 512Mi
+        cpu: 300m
+        memory: 384Mi
 
   # Per-sidecar enable/disable at the platform level (lowest-priority layer).
   # These are overridden by feature gates, namespace labels, and workload labels.

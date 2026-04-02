@@ -201,8 +201,8 @@ The AgentRuntime Controller reconciles AgentRuntime CRs by resolving the target 
 3. Ensure kagenti.io/cleanup finalizer is present
 4. Resolve targetRef (verify Deployment/StatefulSet exists)
 5. Compute config hash from merged configuration:
-   a. Read cluster defaults (kagenti-webhook-defaults)
-   b. Read cluster feature gates (kagenti-webhook-feature-gates)
+   a. Read cluster defaults (kagenti-platform-config)
+   b. Read cluster feature gates (kagenti-feature-gates)
       Note: feature gates are platform-wide policy — they are NOT
       overrideable by namespace defaults or AgentRuntime CRs.
    c. Read namespace defaults (ConfigMap with kagenti.io/defaults=true)
@@ -219,7 +219,7 @@ The AgentRuntime Controller reconciles AgentRuntime CRs by resolving the target 
 
 #### Controller ↔ Webhook Interaction
 
-The controller and the kagenti-extensions mutating webhook work together:
+The controller and the AuthBridge mutating webhook work together:
 
 ```
 AgentRuntime CR created/updated
@@ -244,7 +244,7 @@ AgentRuntime CR created/updated
 | AgentRuntime | All namespaces | Primary resource |
 | Deployment | All namespaces | Re-reconcile if target workload modified externally |
 | StatefulSet | All namespaces | Re-reconcile if target workload modified externally |
-| ConfigMap (cluster) | `kagenti-webhook-system` | Recompute hash when cluster defaults change |
+| ConfigMap (cluster) | `kagenti-system` | Recompute hash when cluster defaults change |
 | ConfigMap (namespace) | `kagenti.io/defaults=true` | Recompute hash when namespace defaults change |
 
 #### Conditions

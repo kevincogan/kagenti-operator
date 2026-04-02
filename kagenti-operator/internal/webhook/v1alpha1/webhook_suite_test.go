@@ -131,6 +131,9 @@ var _ = BeforeSuite(func() {
 	err = SetupAuthBridgeWebhookWithManager(mgr, podMutator)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = SetupAgentRuntimeWebhookWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
 	// +kubebuilder:scaffold:webhook
 
 	go func() {

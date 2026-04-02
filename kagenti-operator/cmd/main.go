@@ -256,11 +256,11 @@ func main() {
 			// Without this, the controller would cache ALL ConfigMaps cluster-wide.
 			//
 			// Two types of ConfigMaps are relevant:
-			// 1. Cluster-level defaults in kagenti-webhook-system:
-			//    - kagenti-webhook-defaults (platform-wide sidecar config)
-			//    - kagenti-webhook-feature-gates (which AuthBridge components are enabled)
-			//    Both are deployed by the kagenti-webhook Helm chart and share the
-			//    label app.kubernetes.io/name=kagenti-webhook.
+			// 1. Cluster-level defaults in kagenti-system:
+			//    - kagenti-platform-config (platform-wide sidecar config)
+			//    - kagenti-feature-gates (which AuthBridge components are enabled)
+			//    Both are deployed by the kagenti-operator Helm chart and share the
+			//    label app.kubernetes.io/name=kagenti-operator-chart.
 			//
 			// 2. Namespace-level defaults in agent namespaces:
 			//    ConfigMaps labeled kagenti.io/defaults=true, deployed by platform
@@ -270,7 +270,7 @@ func main() {
 					Namespaces: map[string]cache.Config{
 						controller.ClusterDefaultsNamespace: {
 							LabelSelector: labels.SelectorFromSet(map[string]string{
-								"app.kubernetes.io/name": "kagenti-webhook",
+								"app.kubernetes.io/name": "kagenti-operator-chart",
 							}),
 						},
 						cache.AllNamespaces: {
