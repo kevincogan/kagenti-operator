@@ -90,14 +90,18 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+    - name: Install yq
+      if: github.ref_type == 'tag'
+      uses: mikefarah/yq@v4
+
     - name: Package and push Helm chart
       if: github.ref_type == 'tag'
       run: |
         chartVersion=$(echo "${{ github.ref_name }}" | cut -c 2-)
         chartPackageName="kagenti-operator-chart-${chartVersion}.tgz"
         cd ${{ env.CHARTS_PATH }}/kagenti-operator
-        sed -i "s/tag: latest/tag: ${chartVersion}/g" values.yaml
-        sed -i "s/pullPolicy: Always/pullPolicy: IfNotPresent/g" values.yaml
+        yq -i '.controllerManager.container.image.tag = strenv(chartVersion)' values.yaml
+        yq -i '.controllerManager.container.image.pullPolicy = "IfNotPresent"' values.yaml
         helm package . --destination . --version "${chartVersion}" --app-version "${chartVersion}"
         helm push "./${chartPackageName}" oci://${{ env.REGISTRY }}/${{ env.REPO }}
 
