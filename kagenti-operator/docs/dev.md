@@ -151,8 +151,8 @@ This runs the operator on your machine while connecting to a remote Kubernetes c
 #### Option B: Deploy to Cluster
 
 ```bash
-# Build and load image to Kind
-make ko-local-build kind-load-image
+# Build image and load to Kind
+make docker-build kind-load-image
 
 # Deploy using Helm
 make install-local-chart
@@ -297,17 +297,6 @@ make docker-build
 
 # Push to registry
 make docker-push
-```
-
-### Build with Ko (Faster)
-
-[Ko](https://ko.build/) provides faster builds:
-
-```bash
-# Build and load to Kind
-export KO_DOCKER_REPO=ko.local
-export IMAGE_TAG=$(git rev-parse --short HEAD)
-make ko-local-build kind-load-image
 ```
 
 ### Deploy to Cluster

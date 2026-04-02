@@ -22,11 +22,6 @@ fi
 echo "Updating deployment in namespace ${NAMESPACE}..."
 kubectl -n "${NAMESPACE}" set image deployment/kagenti-controller-manager manager="localhost/kagenti-operator:${TAG}"
 
-# Local Dockerfile builds to /manager, but production images (built with ko) use /ko-app/cmd.
-# Override the command for local dev. See: docs/identity-binding-quickstart.md
-kubectl -n "${NAMESPACE}" patch deployment kagenti-controller-manager \
-  --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/command", "value": ["/manager"]}]'
-
 echo "Waiting for rollout..."
 kubectl rollout status -n "${NAMESPACE}" deployment/kagenti-controller-manager
 

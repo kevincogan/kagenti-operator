@@ -4,14 +4,14 @@ controllerManager:
   container:
     image:
       repository: ghcr.io/kagenti/kagenti-operator/kagenti-operator
-      tag: __PLACEHOLDER__
-      pullPolicy: IfNotPresent
+      tag: latest
+      pullPolicy: Always
     args:
       - "--leader-elect"
       - "--metrics-bind-address=:8443"
       - "--health-probe-bind-address=:8081"
       - "--webhook-cert-path=/tmp/k8s-webhook-server/serving-certs"
-    cmd: /ko-app/cmd
+    cmd: /manager
     resources:
       limits:
         cpu: 500m
