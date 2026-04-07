@@ -14,7 +14,7 @@ controllerManager:
       - "--config-path=/etc/kagenti/config.yaml"
       - "--feature-gates-path=/etc/kagenti/feature-gates/feature-gates.yaml"
       - "--enable-client-registration=true"
-    cmd: /ko-app/cmd
+    cmd: /manager
     resources:
       limits:
         cpu: 500m
