@@ -19,10 +19,12 @@ package utils
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:golint,revive
 )
@@ -34,10 +36,28 @@ const (
 
 	certmanagerVersion = "v1.16.3"
 	certmanagerURLTmpl = "https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml"
+
+	spireCRDsChartVersion = "0.5.0"
+	spireChartVersion     = "0.28.3"
 )
 
 func warnError(err error) {
 	_, _ = fmt.Fprintf(GinkgoWriter, "warning: %v\n", err)
+}
+
+// DetectContainerTool returns the container tool to use for building images.
+// Honors the CONTAINER_TOOL env var. Falls back to auto-detection: docker first, then podman.
+func DetectContainerTool() string {
+	if tool := os.Getenv("CONTAINER_TOOL"); tool != "" {
+		return tool
+	}
+	if _, err := exec.LookPath("docker"); err == nil {
+		return "docker"
+	}
+	if _, err := exec.LookPath("podman"); err == nil {
+		return "podman"
+	}
+	return "docker"
 }
 
 // Run executes the provided command within this context
@@ -165,7 +185,8 @@ func IsCertManagerCRDsInstalled() bool {
 	return false
 }
 
-// LoadImageToKindClusterWithName loads a local docker image to the kind cluster
+// LoadImageToKindClusterWithName loads a local container image to the kind cluster.
+// Falls back to podman save + kind load image-archive when kind load docker-image fails.
 func LoadImageToKindClusterWithName(name string) error {
 	cluster := "kind"
 	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
@@ -174,7 +195,23 @@ func LoadImageToKindClusterWithName(name string) error {
 	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
 	cmd := exec.Command("kind", kindOptions...)
 	_, err := Run(cmd)
-	return err
+	if err == nil {
+		return nil
+	}
+
+	// Fallback for podman: save image to archive, then load archive into Kind
+	_, _ = fmt.Fprintf(GinkgoWriter, "kind load docker-image failed, trying podman save fallback...\n")
+	archivePath := fmt.Sprintf("%s/kind-image-%d.tar", os.TempDir(), time.Now().UnixNano())
+	defer func() { _ = os.Remove(archivePath) }()
+
+	cmd = exec.Command("podman", "save", name, "-o", archivePath)
+	if _, saveErr := Run(cmd); saveErr != nil {
+		return fmt.Errorf("kind load docker-image failed (%w) and podman save fallback also failed: %v", err, saveErr)
+	}
+
+	cmd = exec.Command("kind", "load", "image-archive", archivePath, "--name", cluster)
+	_, archiveErr := Run(cmd)
+	return archiveErr
 }
 
 // GetNonEmptyLines converts given command output string into individual objects
@@ -199,6 +236,262 @@ func GetProjectDir() (string, error) {
 	}
 	wd = strings.Replace(wd, "/test/e2e", "", -1)
 	return wd, nil
+}
+
+// InstallSpire installs SPIRE via Helm with the given trust domain.
+// The SPIFFE hardened charts require CRDs to be installed separately first.
+func InstallSpire(trustDomain string) error {
+	By("adding SPIFFE Helm repo")
+	cmd := exec.Command("helm", "repo", "add", "spiffe",
+		"https://spiffe.github.io/helm-charts-hardened/")
+	if _, err := Run(cmd); err != nil {
+		// Ignore "already exists" errors
+		if !strings.Contains(err.Error(), "already exists") {
+			return err
+		}
+	}
+
+	cmd = exec.Command("helm", "repo", "update")
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+
+	By("installing SPIRE CRDs")
+	cmd = exec.Command("helm", "install", "spire-crds", "spiffe/spire-crds",
+		"--version", spireCRDsChartVersion,
+		"-n", "spire-system",
+		"--create-namespace",
+		"--wait",
+		"--timeout", "2m",
+	)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+
+	By("installing SPIRE Helm chart")
+	cmd = exec.Command("helm", "install", "spire", "spiffe/spire",
+		"--version", spireChartVersion,
+		"-n", "spire-system",
+		fmt.Sprintf("--set=global.spire.trustDomain=%s", trustDomain),
+		"--wait",
+		"--timeout", "5m",
+	)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+
+	By("labeling spire-bundle configmap for controller cache visibility")
+	cmd = exec.Command("kubectl", "label", "--overwrite", "configmap", "spire-bundle",
+		"-n", "spire-system", "kagenti.io/defaults=true")
+	_, err := Run(cmd)
+	return err
+}
+
+// UninstallSpire removes the SPIRE Helm releases.
+func UninstallSpire() {
+	By("uninstalling SPIRE Helm release")
+	cmd := exec.Command("helm", "uninstall", "spire", "-n", "spire-system")
+	if _, err := Run(cmd); err != nil {
+		warnError(err)
+	}
+
+	By("uninstalling SPIRE CRDs Helm release")
+	cmd = exec.Command("helm", "uninstall", "spire-crds", "-n", "spire-system")
+	if _, err := Run(cmd); err != nil {
+		warnError(err)
+	}
+
+	By("deleting spire-system namespace")
+	cmd = exec.Command("kubectl", "delete", "ns", "spire-system", "--ignore-not-found")
+	if _, err := Run(cmd); err != nil {
+		warnError(err)
+	}
+}
+
+// IsSpireCRDsInstalled checks if ClusterSPIFFEID CRD exists.
+func IsSpireCRDsInstalled() bool {
+	cmd := exec.Command("kubectl", "get", "crd", "clusterspiffeids.spire.spiffe.io")
+	_, err := Run(cmd)
+	return err == nil
+}
+
+// WaitForSpireReady waits for SPIRE server and agent pods to be ready.
+func WaitForSpireReady(timeout time.Duration) error {
+	By("waiting for SPIRE pods to be ready")
+	cmd := exec.Command("kubectl", "wait", "pods",
+		"--all",
+		"-n", "spire-system",
+		"--for=condition=Ready",
+		fmt.Sprintf("--timeout=%s", timeout),
+	)
+	_, err := Run(cmd)
+	return err
+}
+
+// KubectlApplyStdin applies YAML from stdin to a namespace.
+func KubectlApplyStdin(yaml, namespace string) (string, error) {
+	args := []string{"apply", "-f", "-"}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	}
+	cmd := exec.Command("kubectl", args...)
+	cmd.Stdin = strings.NewReader(yaml)
+	return Run(cmd)
+}
+
+// KubectlGetJsonpath gets a value using jsonpath from a resource.
+func KubectlGetJsonpath(resource, name, namespace, jsonpath string) (string, error) {
+	cmd := exec.Command("kubectl", "get", resource, name,
+		"-n", namespace,
+		"-o", fmt.Sprintf("jsonpath=%s", jsonpath),
+	)
+	output, err := Run(cmd)
+	return strings.TrimSpace(output), err
+}
+
+// WaitForDeploymentReady waits for a deployment to have Available condition.
+func WaitForDeploymentReady(name, namespace string, timeout time.Duration) error {
+	cmd := exec.Command("kubectl", "wait",
+		fmt.Sprintf("deployment/%s", name),
+		"-n", namespace,
+		"--for=condition=Available",
+		fmt.Sprintf("--timeout=%s", timeout),
+	)
+	_, err := Run(cmd)
+	return err
+}
+
+// WaitForRollout waits for a deployment rollout to complete.
+func WaitForRollout(name, namespace string, timeout time.Duration) error {
+	cmd := exec.Command("kubectl", "rollout", "status",
+		fmt.Sprintf("deployment/%s", name),
+		"-n", namespace,
+		fmt.Sprintf("--timeout=%s", timeout),
+	)
+	_, err := Run(cmd)
+	return err
+}
+
+func buildArgsPatch(argsJSON []byte) string {
+	const patchTmpl = `[{"op":"replace",` +
+		`"path":"/spec/template/spec/containers/0/args",` +
+		`"value":%s}]`
+	return fmt.Sprintf(patchTmpl, string(argsJSON))
+}
+
+// PatchControllerArgs patches controller deployment args with additional flags
+// and returns the original args for later restoration.
+func PatchControllerArgs(namespace, deploy string, addArgs []string) (origArgs []string, err error) {
+	By("getting current controller args")
+	cmd := exec.Command("kubectl", "get", "deployment", deploy,
+		"-n", namespace,
+		"-o", "jsonpath={.spec.template.spec.containers[0].args}",
+	)
+	output, err := Run(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current args: %w", err)
+	}
+
+	output = strings.TrimSpace(output)
+	if output != "" {
+		if err := json.Unmarshal([]byte(output), &origArgs); err != nil {
+			return nil, fmt.Errorf("failed to parse current args %q: %w", output, err)
+		}
+	}
+
+	By(fmt.Sprintf("patching controller with args: %v", addArgs))
+	newArgs := make([]string, len(origArgs), len(origArgs)+len(addArgs))
+	copy(newArgs, origArgs)
+	newArgs = append(newArgs, addArgs...)
+	argsJSON, jsonErr := json.Marshal(newArgs)
+	if jsonErr != nil {
+		return origArgs, fmt.Errorf("failed to marshal new args: %w", jsonErr)
+	}
+	patchJSON := buildArgsPatch(argsJSON)
+	cmd = exec.Command("kubectl", "patch", "deployment", deploy,
+		"-n", namespace,
+		"--type=json",
+		fmt.Sprintf("-p=%s", patchJSON),
+	)
+	if _, patchErr := Run(cmd); patchErr != nil {
+		return origArgs, fmt.Errorf("failed to patch args: %w", patchErr)
+	}
+
+	By("waiting for controller rollout after patch")
+	if err := WaitForRollout(deploy, namespace, 2*time.Minute); err != nil {
+		return origArgs, fmt.Errorf("rollout failed after patch: %w", err)
+	}
+
+	return origArgs, nil
+}
+
+// RestoreControllerArgs restores controller deployment to original args.
+func RestoreControllerArgs(namespace, deploy string, origArgs []string) error {
+	By(fmt.Sprintf("restoring controller args to: %v", origArgs))
+
+	argsJSON, err := json.Marshal(origArgs)
+	if err != nil {
+		return fmt.Errorf("failed to marshal original args: %w", err)
+	}
+
+	patchJSON := buildArgsPatch(argsJSON)
+	cmd := exec.Command("kubectl", "patch", "deployment", deploy,
+		"-n", namespace,
+		"--type=json",
+		fmt.Sprintf("-p=%s", patchJSON),
+	)
+	if _, err := Run(cmd); err != nil {
+		return fmt.Errorf("failed to restore args: %w", err)
+	}
+
+	By("waiting for controller rollout after restore")
+	if err := WaitForRollout(deploy, namespace, 2*time.Minute); err != nil {
+		return fmt.Errorf("rollout failed after restore: %w", err)
+	}
+
+	return nil
+}
+
+// DeployController installs CRDs and deploys the controller-manager.
+func DeployController(namespace, img string) error {
+	By("creating manager namespace")
+	cmd := exec.Command("kubectl", "create", "ns", namespace)
+	if _, err := Run(cmd); err != nil && !strings.Contains(err.Error(), "already exists") {
+		return err
+	}
+
+	By("labeling the namespace to enforce the restricted security policy")
+	cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		"pod-security.kubernetes.io/enforce=restricted")
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+
+	By("installing CRDs")
+	cmd = exec.Command("make", "install")
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+
+	By("deploying the controller-manager")
+	cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", img))
+	_, err := Run(cmd)
+	return err
+}
+
+// UndeployController undeploys the controller-manager and uninstalls CRDs.
+func UndeployController() {
+	By("undeploying the controller-manager")
+	cmd := exec.Command("make", "undeploy")
+	if _, err := Run(cmd); err != nil {
+		warnError(err)
+	}
+
+	By("uninstalling CRDs")
+	cmd = exec.Command("make", "uninstall")
+	if _, err := Run(cmd); err != nil {
+		warnError(err)
+	}
 }
 
 // UncommentCode searches for target in the file and remove the comment prefix
