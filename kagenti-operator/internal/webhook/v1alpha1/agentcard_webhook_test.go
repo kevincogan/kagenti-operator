@@ -22,7 +22,6 @@ import (
 	"testing"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -78,17 +77,6 @@ func TestAgentCardValidator_ValidateCreate(t *testing.T) {
 			t.Fatal("expected error for missing targetRef")
 		}
 		if !strings.Contains(err.Error(), "targetRef is required") {
-			t.Errorf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("wrong object type returns error", func(t *testing.T) {
-		v := &AgentCardValidator{}
-		_, err := v.ValidateCreate(ctx, &corev1.Pod{})
-		if err == nil {
-			t.Fatal("expected error for wrong object type")
-		}
-		if !strings.Contains(err.Error(), "expected an AgentCard") {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
@@ -249,10 +237,4 @@ func TestAgentCardValidator_ValidateDelete(t *testing.T) {
 		}
 	})
 
-	t.Run("wrong object type returns error", func(t *testing.T) {
-		_, err := v.ValidateDelete(ctx, &corev1.Pod{})
-		if err == nil {
-			t.Fatal("expected error for wrong object type")
-		}
-	})
 }

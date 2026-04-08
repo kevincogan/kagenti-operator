@@ -21,7 +21,6 @@ import (
 	"fmt"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -30,8 +29,7 @@ import (
 var agentcardlog = ctrl.Log.WithName("agentcard-webhook")
 
 func SetupAgentCardWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&agentv1alpha1.AgentCard{}).
+	return ctrl.NewWebhookManagedBy(mgr, &agentv1alpha1.AgentCard{}).
 		WithValidator(&AgentCardValidator{Reader: mgr.GetAPIReader()}).
 		Complete()
 }
@@ -45,12 +43,7 @@ type AgentCardValidator struct {
 	Reader client.Reader
 }
 
-func (v *AgentCardValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	agentcard, ok := obj.(*agentv1alpha1.AgentCard)
-	if !ok {
-		return nil, fmt.Errorf("expected an AgentCard but got a %T", obj)
-	}
-
+func (v *AgentCardValidator) ValidateCreate(ctx context.Context, agentcard *agentv1alpha1.AgentCard) (admission.Warnings, error) {
 	agentcardlog.Info("validate create", "name", agentcard.Name)
 
 	warnings, err := v.validateAgentCard(agentcard)
@@ -65,12 +58,7 @@ func (v *AgentCardValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 	return warnings, nil
 }
 
-func (v *AgentCardValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	agentcard, ok := newObj.(*agentv1alpha1.AgentCard)
-	if !ok {
-		return nil, fmt.Errorf("expected an AgentCard but got a %T", newObj)
-	}
-
+func (v *AgentCardValidator) ValidateUpdate(ctx context.Context, _ *agentv1alpha1.AgentCard, agentcard *agentv1alpha1.AgentCard) (admission.Warnings, error) {
 	agentcardlog.Info("validate update", "name", agentcard.Name)
 
 	warnings, err := v.validateAgentCard(agentcard)
@@ -85,12 +73,7 @@ func (v *AgentCardValidator) ValidateUpdate(ctx context.Context, oldObj, newObj 
 	return warnings, nil
 }
 
-func (v *AgentCardValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	agentcard, ok := obj.(*agentv1alpha1.AgentCard)
-	if !ok {
-		return nil, fmt.Errorf("expected an AgentCard but got a %T", obj)
-	}
-
+func (v *AgentCardValidator) ValidateDelete(_ context.Context, agentcard *agentv1alpha1.AgentCard) (admission.Warnings, error) {
 	agentcardlog.Info("validate delete", "name", agentcard.Name)
 
 	return nil, nil

@@ -21,7 +21,6 @@ import (
 	"fmt"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -30,8 +29,7 @@ import (
 var agentruntimelog = ctrl.Log.WithName("agentruntime-webhook")
 
 func SetupAgentRuntimeWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&agentv1alpha1.AgentRuntime{}).
+	return ctrl.NewWebhookManagedBy(mgr, &agentv1alpha1.AgentRuntime{}).
 		WithValidator(&AgentRuntimeValidator{Reader: mgr.GetAPIReader()}).
 		Complete()
 }
@@ -45,12 +43,7 @@ type AgentRuntimeValidator struct {
 	Reader client.Reader
 }
 
-func (v *AgentRuntimeValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	rt, ok := obj.(*agentv1alpha1.AgentRuntime)
-	if !ok {
-		return nil, fmt.Errorf("expected an AgentRuntime but got a %T", obj)
-	}
-
+func (v *AgentRuntimeValidator) ValidateCreate(ctx context.Context, rt *agentv1alpha1.AgentRuntime) (admission.Warnings, error) {
 	agentruntimelog.Info("validate create", "name", rt.Name)
 
 	if err := v.checkDuplicateTargetRef(ctx, rt); err != nil {
@@ -60,12 +53,7 @@ func (v *AgentRuntimeValidator) ValidateCreate(ctx context.Context, obj runtime.
 	return nil, nil
 }
 
-func (v *AgentRuntimeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	rt, ok := newObj.(*agentv1alpha1.AgentRuntime)
-	if !ok {
-		return nil, fmt.Errorf("expected an AgentRuntime but got a %T", newObj)
-	}
-
+func (v *AgentRuntimeValidator) ValidateUpdate(ctx context.Context, _ *agentv1alpha1.AgentRuntime, rt *agentv1alpha1.AgentRuntime) (admission.Warnings, error) {
 	agentruntimelog.Info("validate update", "name", rt.Name)
 
 	if err := v.checkDuplicateTargetRef(ctx, rt); err != nil {
@@ -75,12 +63,7 @@ func (v *AgentRuntimeValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 	return nil, nil
 }
 
-func (v *AgentRuntimeValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	rt, ok := obj.(*agentv1alpha1.AgentRuntime)
-	if !ok {
-		return nil, fmt.Errorf("expected an AgentRuntime but got a %T", obj)
-	}
-
+func (v *AgentRuntimeValidator) ValidateDelete(_ context.Context, rt *agentv1alpha1.AgentRuntime) (admission.Warnings, error) {
 	agentruntimelog.Info("validate delete", "name", rt.Name)
 
 	return nil, nil

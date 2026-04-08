@@ -22,7 +22,6 @@ import (
 	"testing"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -60,17 +59,6 @@ func TestAgentRuntimeValidator_ValidateCreate(t *testing.T) {
 		v := &AgentRuntimeValidator{}
 		_, err := v.ValidateCreate(ctx, validAgentRuntime())
 		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("wrong object type returns error", func(t *testing.T) {
-		v := &AgentRuntimeValidator{}
-		_, err := v.ValidateCreate(ctx, &corev1.Pod{})
-		if err == nil {
-			t.Fatal("expected error for wrong object type")
-		}
-		if !strings.Contains(err.Error(), "expected an AgentRuntime") {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
@@ -198,17 +186,6 @@ func TestAgentRuntimeValidator_ValidateUpdate(t *testing.T) {
 	ctx := context.Background()
 	old := validAgentRuntime()
 
-	t.Run("wrong object type returns error", func(t *testing.T) {
-		v := &AgentRuntimeValidator{}
-		_, err := v.ValidateUpdate(ctx, old, &corev1.Pod{})
-		if err == nil {
-			t.Fatal("expected error for wrong object type")
-		}
-		if !strings.Contains(err.Error(), "expected an AgentRuntime") {
-			t.Errorf("unexpected error: %v", err)
-		}
-	})
-
 	t.Run("valid update succeeds", func(t *testing.T) {
 		v := &AgentRuntimeValidator{}
 		_, err := v.ValidateUpdate(ctx, old, validAgentRuntime())
@@ -268,10 +245,4 @@ func TestAgentRuntimeValidator_ValidateDelete(t *testing.T) {
 		}
 	})
 
-	t.Run("wrong object type returns error", func(t *testing.T) {
-		_, err := v.ValidateDelete(ctx, &corev1.Pod{})
-		if err == nil {
-			t.Fatal("expected error for wrong object type")
-		}
-	})
 }
