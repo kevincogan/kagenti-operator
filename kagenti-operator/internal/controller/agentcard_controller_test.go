@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -210,7 +211,7 @@ var _ = Describe("AgentCard Controller", func() {
 				NamespacedName: agentCardNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
 
 			By("verifying the AgentCard status was updated")
 			agentCard := &agentv1alpha1.AgentCard{}
@@ -1020,6 +1021,195 @@ var _ = Describe("aggregateVerifiedState", func() {
 			AnnotationVerifiedStatePrefix + "only-card": "false",
 		}
 		Expect(reconciler.aggregateVerifiedState(annotations)).To(BeFalse())
+	})
+})
+
+var _ = Describe("AgentCard Controller - getSyncPeriod", func() {
+	const (
+		deploymentName = "syncperiod-test-agent"
+		serviceName    = "syncperiod-test-agent"
+		namespace      = "default"
+	)
+
+	ctx := context.Background()
+
+	var reconciler *AgentCardReconciler
+
+	BeforeEach(func() {
+		By("creating a Deployment with agent labels")
+		replicas := int32(1)
+		deployment := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name":    deploymentName,
+					LabelAgentType:              LabelValueAgent,
+					ProtocolLabelPrefix + "a2a": "",
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: &replicas,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app.kubernetes.io/name": deploymentName,
+					},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"app.kubernetes.io/name":    deploymentName,
+							LabelAgentType:              LabelValueAgent,
+							ProtocolLabelPrefix + "a2a": "",
+						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "agent", Image: "test-image:latest"},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+		By("setting Deployment status to Available")
+		Eventually(func() error {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, deployment); err != nil {
+				return err
+			}
+			deployment.Status.Conditions = []appsv1.DeploymentCondition{
+				{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
+			}
+			return k8sClient.Status().Update(ctx, deployment)
+		}).Should(Succeed())
+
+		By("creating a Service for the Deployment")
+		service := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceName,
+				Namespace: namespace,
+			},
+			Spec: corev1.ServiceSpec{
+				Ports: []corev1.ServicePort{
+					{Name: "http", Port: 8000, Protocol: corev1.ProtocolTCP},
+				},
+				Selector: map[string]string{
+					"app.kubernetes.io/name": deploymentName,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, service)).To(Succeed())
+
+		reconciler = &AgentCardReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			AgentFetcher: &mockFetcher{
+				cardData: &agentv1alpha1.AgentCardData{
+					Name:    "Test Agent",
+					Version: "1.0.0",
+					URL:     "http://0.0.0.0:8000",
+				},
+			},
+		}
+	})
+
+	AfterEach(func() {
+		By("cleaning up resources")
+		for _, name := range []string{
+			"syncperiod-10s", "syncperiod-5m", "syncperiod-garbage",
+			"syncperiod-empty", "syncperiod-update",
+		} {
+			ac := &agentv1alpha1.AgentCard{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ac); err == nil {
+				_ = k8sClient.Delete(ctx, ac)
+			}
+		}
+
+		deployment := &appsv1.Deployment{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, deployment); err == nil {
+			Expect(k8sClient.Delete(ctx, deployment)).To(Succeed())
+		}
+
+		service := &corev1.Service{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: namespace}, service); err == nil {
+			Expect(k8sClient.Delete(ctx, service)).To(Succeed())
+		}
+	})
+
+	reconcileCard := func(agentCardName, syncPeriod string) reconcile.Result {
+		agentCard := &agentv1alpha1.AgentCard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      agentCardName,
+				Namespace: namespace,
+			},
+			Spec: agentv1alpha1.AgentCardSpec{
+				SyncPeriod: syncPeriod,
+				TargetRef: &agentv1alpha1.TargetRef{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       deploymentName,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, agentCard)).To(Succeed())
+
+		nn := types.NamespacedName{Name: agentCardName, Namespace: namespace}
+
+		By("reconciling to add finalizer")
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		By("reconciling to fetch agent card and apply sync period")
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		return result
+	}
+
+	Context("with valid durations", func() {
+		It("should requeue after 10s for syncPeriod '10s'", func() {
+			result := reconcileCard("syncperiod-10s", "10s")
+			Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+		})
+
+		It("should requeue after 5m for syncPeriod '5m'", func() {
+			result := reconcileCard("syncperiod-5m", "5m")
+			Expect(result.RequeueAfter).To(Equal(5 * time.Minute))
+		})
+	})
+
+	Context("with invalid or empty durations", func() {
+		It("should fall back to 30s default for invalid syncPeriod 'garbage'", func() {
+			result := reconcileCard("syncperiod-garbage", "garbage")
+			Expect(result.RequeueAfter).To(Equal(DefaultSyncPeriod))
+		})
+
+		It("should fall back to 30s default for empty syncPeriod", func() {
+			result := reconcileCard("syncperiod-empty", "")
+			Expect(result.RequeueAfter).To(Equal(DefaultSyncPeriod))
+		})
+	})
+
+	Context("when syncPeriod is updated on a live AgentCard", func() {
+		It("should apply the new period on next reconciliation", func() {
+			agentCardName := "syncperiod-update"
+			nn := types.NamespacedName{Name: agentCardName, Namespace: namespace}
+
+			By("creating AgentCard with syncPeriod '30s' and reconciling")
+			result := reconcileCard(agentCardName, "30s")
+			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+
+			By("patching syncPeriod to '10s'")
+			agentCard := &agentv1alpha1.AgentCard{}
+			Expect(k8sClient.Get(ctx, nn, agentCard)).To(Succeed())
+			agentCard.Spec.SyncPeriod = "10s"
+			Expect(k8sClient.Update(ctx, agentCard)).To(Succeed())
+
+			By("reconciling again to pick up the new period")
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+		})
 	})
 })
 
