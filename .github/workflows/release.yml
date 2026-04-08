@@ -86,7 +86,7 @@ jobs:
     # --- Release-only steps (tag pushes) ---
     - name: Set up Helm
       if: github.ref_type == 'tag'
-      uses: azure/setup-helm@v4
+      uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
