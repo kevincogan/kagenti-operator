@@ -425,6 +425,77 @@ var _ = Describe("AgentRuntime Controller", func() {
 		})
 	})
 
+	Context("When targeting a StatefulSet", func() {
+		const (
+			ssName = "test-agent-sts"
+			rtName = "sts-agentruntime"
+			ssApp  = "sts-app"
+			ssNS   = "default"
+		)
+
+		newStatefulSet := func(name, ns string) *appsv1.StatefulSet {
+			return &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: ptr.To(int32(1)),
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": ssApp}},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": ssApp}},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: "agent", Image: "test-image:latest"}},
+						},
+					},
+				},
+			}
+		}
+
+		It("should apply labels and config-hash to the StatefulSet pod template", func() {
+			ss := newStatefulSet(ssName, ssNS)
+			Expect(k8sClient.Create(ctx, ss)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, ss) }()
+
+			Eventually(func() error {
+				cur := &appsv1.StatefulSet{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: ssName, Namespace: ssNS}, cur); err != nil {
+					return err
+				}
+				cur.Status.Replicas = 1
+				cur.Status.ReadyReplicas = 1
+				return k8sClient.Status().Update(ctx, cur)
+			}).Should(Succeed())
+
+			rt := &agentv1alpha1.AgentRuntime{
+				ObjectMeta: metav1.ObjectMeta{Name: rtName, Namespace: ssNS},
+				Spec: agentv1alpha1.AgentRuntimeSpec{
+					Type: agentv1alpha1.RuntimeTypeAgent,
+					TargetRef: agentv1alpha1.TargetRef{
+						APIVersion: "apps/v1",
+						Kind:       "StatefulSet",
+						Name:       ssName,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			r := newReconciler()
+			nn := types.NamespacedName{Name: rtName, Namespace: ssNS}
+
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ssName, Namespace: ssNS}, updated)).To(Succeed())
+			Expect(updated.Labels[LabelAgentType]).To(Equal("agent"))
+			Expect(updated.Labels[LabelManagedBy]).To(Equal(LabelManagedByValue))
+			Expect(updated.Spec.Template.Labels[LabelAgentType]).To(Equal("agent"))
+			Expect(updated.Spec.Template.Annotations).To(HaveKey(AnnotationConfigHash))
+			Expect(updated.Spec.Template.Annotations[AnnotationConfigHash]).NotTo(BeEmpty())
+		})
+	})
+
 	Context("When the AgentRuntime CR does not exist", func() {
 		It("should return without error for a not-found CR", func() {
 			r := newReconciler()

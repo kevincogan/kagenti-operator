@@ -18,7 +18,9 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -31,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
+	"github.com/kagenti/operator/internal/agentcard"
 )
 
 // mockFetcher implements agentcard.Fetcher for testing
@@ -46,6 +49,35 @@ func (m *mockFetcher) Fetch(
 		return nil, m.err
 	}
 	return m.cardData, nil
+}
+
+// capturingProtocolFetcher records the protocol passed to Fetch (for multi-protocol label tests).
+type capturingProtocolFetcher struct {
+	mu       sync.Mutex
+	protocol string
+	cardData *agentv1alpha1.AgentCardData
+}
+
+func (c *capturingProtocolFetcher) Fetch(
+	ctx context.Context, protocol, _, _, _ string,
+) (*agentv1alpha1.AgentCardData, error) {
+	c.mu.Lock()
+	c.protocol = protocol
+	c.mu.Unlock()
+	if c.cardData != nil {
+		return c.cardData, nil
+	}
+	return &agentv1alpha1.AgentCardData{
+		Name:    "capture",
+		Version: "1.0.0",
+		URL:     "http://0.0.0.0:8000",
+	}, nil
+}
+
+func (c *capturingProtocolFetcher) lastProtocol() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.protocol
 }
 
 var _ = Describe("AgentCard Controller", func() {
@@ -1021,6 +1053,485 @@ var _ = Describe("aggregateVerifiedState", func() {
 			AnnotationVerifiedStatePrefix + "only-card": "false",
 		}
 		Expect(reconciler.aggregateVerifiedState(annotations)).To(BeFalse())
+	})
+})
+
+var _ = Describe("AgentCard Controller — deletion finalizer", func() {
+	const (
+		deploymentName = "del-fin-agent"
+		serviceName    = "del-fin-agent"
+		agentCardName  = "del-fin-card"
+		namespace      = "default"
+	)
+
+	ctx := context.Background()
+	nn := types.NamespacedName{Name: agentCardName, Namespace: namespace}
+
+	BeforeEach(func() {
+		replicas := int32(1)
+		deployment := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name":    deploymentName,
+					LabelAgentType:              LabelValueAgent,
+					ProtocolLabelPrefix + "a2a": "",
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: &replicas,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app.kubernetes.io/name": deploymentName},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"app.kubernetes.io/name":    deploymentName,
+							LabelAgentType:              LabelValueAgent,
+							ProtocolLabelPrefix + "a2a": "",
+						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "agent", Image: "test-image:latest"}},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+		Eventually(func() error {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, deployment); err != nil {
+				return err
+			}
+			deployment.Status.Conditions = []appsv1.DeploymentCondition{
+				{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
+			}
+			return k8sClient.Status().Update(ctx, deployment)
+		}).Should(Succeed())
+
+		service := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: serviceName, Namespace: namespace},
+			Spec: corev1.ServiceSpec{
+				Ports: []corev1.ServicePort{{Name: "http", Port: 8000, Protocol: corev1.ProtocolTCP}},
+				Selector: map[string]string{
+					"app.kubernetes.io/name": deploymentName,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, service)).To(Succeed())
+
+		ac := &agentv1alpha1.AgentCard{
+			ObjectMeta: metav1.ObjectMeta{Name: agentCardName, Namespace: namespace},
+			Spec: agentv1alpha1.AgentCardSpec{
+				SyncPeriod: "30s",
+				TargetRef: &agentv1alpha1.TargetRef{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       deploymentName,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, ac)).To(Succeed())
+	})
+
+	AfterEach(func() {
+		ac := &agentv1alpha1.AgentCard{}
+		if err := k8sClient.Get(ctx, nn, ac); err == nil {
+			ac.Finalizers = nil
+			_ = k8sClient.Update(ctx, ac)
+			_ = k8sClient.Delete(ctx, ac)
+		}
+		dep := &appsv1.Deployment{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, dep); err == nil {
+			Expect(k8sClient.Delete(ctx, dep)).To(Succeed())
+		}
+		svc := &corev1.Service{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: namespace}, svc); err == nil {
+			Expect(k8sClient.Delete(ctx, svc)).To(Succeed())
+		}
+	})
+
+	It("should run finalizer, clean per-card state, and allow deletion", func() {
+		reconciler := &AgentCardReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			AgentFetcher: &mockFetcher{
+				cardData: &agentv1alpha1.AgentCardData{
+					Name: "Fin", Version: "1.0.0", URL: "http://0.0.0.0:8000",
+				},
+			},
+		}
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		perCardKey := AnnotationVerifiedStatePrefix + agentCardName
+		depNN := types.NamespacedName{Name: deploymentName, Namespace: namespace}
+		Eventually(func() error {
+			dep := &appsv1.Deployment{}
+			if err := k8sClient.Get(ctx, depNN, dep); err != nil {
+				return err
+			}
+			if dep.Annotations == nil {
+				dep.Annotations = map[string]string{}
+			}
+			dep.Annotations[perCardKey] = "true"
+			if dep.Spec.Template.Labels == nil {
+				dep.Spec.Template.Labels = map[string]string{}
+			}
+			dep.Spec.Template.Labels[LabelSignatureVerified] = "true"
+			return k8sClient.Update(ctx, dep)
+		}).Should(Succeed())
+
+		Expect(k8sClient.Delete(ctx, &agentv1alpha1.AgentCard{ObjectMeta: metav1.ObjectMeta{Name: agentCardName, Namespace: namespace}})).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		depAfter := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, depNN, depAfter)).To(Succeed())
+		Expect(depAfter.Annotations).NotTo(HaveKey(perCardKey))
+		Expect(depAfter.Spec.Template.Labels).NotTo(HaveKey(LabelSignatureVerified))
+
+		ac := &agentv1alpha1.AgentCard{}
+		err = k8sClient.Get(ctx, nn, ac)
+		Expect(err).To(HaveOccurred(), "AgentCard should be removed after finalizer clears")
+	})
+})
+
+var _ = Describe("AgentCard Controller — ConfigMap-backed fetch", func() {
+	const (
+		deploymentName = "cm-fetch-agent"
+		serviceName    = "cm-fetch-agent"
+		agentCardName  = "cm-fetch-card"
+		namespace      = "default"
+	)
+
+	ctx := context.Background()
+	nn := types.NamespacedName{Name: agentCardName, Namespace: namespace}
+
+	BeforeEach(func() {
+		replicas := int32(1)
+		deployment := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name":    deploymentName,
+					LabelAgentType:              LabelValueAgent,
+					ProtocolLabelPrefix + "a2a": "",
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: &replicas,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app.kubernetes.io/name": deploymentName},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"app.kubernetes.io/name":    deploymentName,
+							LabelAgentType:              LabelValueAgent,
+							ProtocolLabelPrefix + "a2a": "",
+						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "agent", Image: "test-image:latest"}},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+		Eventually(func() error {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, deployment); err != nil {
+				return err
+			}
+			deployment.Status.Conditions = []appsv1.DeploymentCondition{
+				{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
+			}
+			return k8sClient.Status().Update(ctx, deployment)
+		}).Should(Succeed())
+
+		service := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: serviceName, Namespace: namespace},
+			Spec: corev1.ServiceSpec{
+				Ports: []corev1.ServicePort{{Name: "http", Port: 8000, Protocol: corev1.ProtocolTCP}},
+				Selector: map[string]string{
+					"app.kubernetes.io/name": deploymentName,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, service)).To(Succeed())
+
+		card := agentv1alpha1.AgentCardData{
+			Name: "From ConfigMap", Version: "2.0.0", URL: "http://signed.local:8000",
+		}
+		raw, err := json.Marshal(card)
+		Expect(err).NotTo(HaveOccurred())
+
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName + agentcard.SignedCardConfigMapSuffix,
+				Namespace: namespace,
+			},
+			Data: map[string]string{agentcard.SignedCardConfigMapKey: string(raw)},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+		ac := &agentv1alpha1.AgentCard{
+			ObjectMeta: metav1.ObjectMeta{Name: agentCardName, Namespace: namespace},
+			Spec: agentv1alpha1.AgentCardSpec{
+				SyncPeriod: "30s",
+				TargetRef: &agentv1alpha1.TargetRef{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       deploymentName,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, ac)).To(Succeed())
+	})
+
+	AfterEach(func() {
+		cm := &corev1.ConfigMap{}
+		cmNN := types.NamespacedName{Name: deploymentName + agentcard.SignedCardConfigMapSuffix, Namespace: namespace}
+		if err := k8sClient.Get(ctx, cmNN, cm); err == nil {
+			_ = k8sClient.Delete(ctx, cm)
+		}
+		ac := &agentv1alpha1.AgentCard{}
+		if err := k8sClient.Get(ctx, nn, ac); err == nil {
+			ac.Finalizers = nil
+			_ = k8sClient.Update(ctx, ac)
+			_ = k8sClient.Delete(ctx, ac)
+		}
+		dep := &appsv1.Deployment{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, dep); err == nil {
+			Expect(k8sClient.Delete(ctx, dep)).To(Succeed())
+		}
+		svc := &corev1.Service{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: namespace}, svc); err == nil {
+			Expect(k8sClient.Delete(ctx, svc)).To(Succeed())
+		}
+	})
+
+	It("should prefer signed card data from ConfigMap in the reconcile loop", func() {
+		reconciler := &AgentCardReconciler{
+			Client:       k8sClient,
+			Scheme:       k8sClient.Scheme(),
+			AgentFetcher: agentcard.NewConfigMapFetcher(k8sClient),
+		}
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &agentv1alpha1.AgentCard{}
+		Expect(k8sClient.Get(ctx, nn, updated)).To(Succeed())
+		Expect(updated.Status.Card).NotTo(BeNil())
+		// Card body comes from ConfigMap; reconciler rewrites URL to the in-cluster Service URL.
+		Expect(updated.Status.Card.Name).To(Equal("From ConfigMap"))
+		Expect(updated.Status.Card.URL).To(Equal(agentcard.GetServiceURL(serviceName, namespace, 8000)))
+	})
+})
+
+var _ = Describe("AgentCard Controller — protocol label edge cases", func() {
+	const namespace = "default"
+	ctx := context.Background()
+
+	It("should fetch using one of multiple protocol labels", func() {
+		deploymentName := "multi-proto-agent"
+		serviceName := deploymentName
+		agentCardName := "multi-proto-card"
+		replicas := int32(1)
+
+		deployment := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name":    deploymentName,
+					LabelAgentType:              LabelValueAgent,
+					ProtocolLabelPrefix + "a2a": "",
+					ProtocolLabelPrefix + "mcp": "",
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: &replicas,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app.kubernetes.io/name": deploymentName},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"app.kubernetes.io/name":    deploymentName,
+							LabelAgentType:              LabelValueAgent,
+							ProtocolLabelPrefix + "a2a": "",
+							ProtocolLabelPrefix + "mcp": "",
+						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "agent", Image: "test-image:latest"}},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, deployment) }()
+		Eventually(func() error {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, deployment); err != nil {
+				return err
+			}
+			deployment.Status.Conditions = []appsv1.DeploymentCondition{
+				{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
+			}
+			return k8sClient.Status().Update(ctx, deployment)
+		}).Should(Succeed())
+
+		service := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: serviceName, Namespace: namespace},
+			Spec: corev1.ServiceSpec{
+				Ports:    []corev1.ServicePort{{Name: "http", Port: 8000, Protocol: corev1.ProtocolTCP}},
+				Selector: map[string]string{"app.kubernetes.io/name": deploymentName},
+			},
+		}
+		Expect(k8sClient.Create(ctx, service)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, service) }()
+
+		capture := &capturingProtocolFetcher{}
+		reconciler := &AgentCardReconciler{
+			Client:       k8sClient,
+			Scheme:       k8sClient.Scheme(),
+			AgentFetcher: capture,
+		}
+
+		ac := &agentv1alpha1.AgentCard{
+			ObjectMeta: metav1.ObjectMeta{Name: agentCardName, Namespace: namespace},
+			Spec: agentv1alpha1.AgentCardSpec{
+				SyncPeriod: "30s",
+				TargetRef: &agentv1alpha1.TargetRef{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       deploymentName,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, ac)).To(Succeed())
+		defer func() {
+			got := &agentv1alpha1.AgentCard{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: agentCardName, Namespace: namespace}, got); err == nil {
+				got.Finalizers = nil
+				_ = k8sClient.Update(ctx, got)
+				_ = k8sClient.Delete(ctx, got)
+			}
+		}()
+
+		nn := types.NamespacedName{Name: agentCardName, Namespace: namespace}
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		p := capture.lastProtocol()
+		Expect([]string{"a2a", "mcp"}).To(ContainElement(p))
+	})
+
+	It("should surface NoProtocol when workload has no protocol labels", func() {
+		deploymentName := "no-proto-agent"
+		serviceName := deploymentName
+		agentCardName := "no-proto-card"
+		replicas := int32(1)
+
+		deployment := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name": deploymentName,
+					LabelAgentType:           LabelValueAgent,
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: &replicas,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app.kubernetes.io/name": deploymentName},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"app.kubernetes.io/name": deploymentName,
+							LabelAgentType:           LabelValueAgent,
+						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "agent", Image: "test-image:latest"}},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, deployment) }()
+		Eventually(func() error {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, deployment); err != nil {
+				return err
+			}
+			deployment.Status.Conditions = []appsv1.DeploymentCondition{
+				{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
+			}
+			return k8sClient.Status().Update(ctx, deployment)
+		}).Should(Succeed())
+
+		service := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: serviceName, Namespace: namespace},
+			Spec: corev1.ServiceSpec{
+				Ports:    []corev1.ServicePort{{Name: "http", Port: 8000, Protocol: corev1.ProtocolTCP}},
+				Selector: map[string]string{"app.kubernetes.io/name": deploymentName},
+			},
+		}
+		Expect(k8sClient.Create(ctx, service)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, service) }()
+
+		reconciler := &AgentCardReconciler{
+			Client:       k8sClient,
+			Scheme:       k8sClient.Scheme(),
+			AgentFetcher: &mockFetcher{cardData: &agentv1alpha1.AgentCardData{Name: "x", Version: "1", URL: "http://x"}},
+		}
+
+		ac := &agentv1alpha1.AgentCard{
+			ObjectMeta: metav1.ObjectMeta{Name: agentCardName, Namespace: namespace},
+			Spec: agentv1alpha1.AgentCardSpec{
+				SyncPeriod: "30s",
+				TargetRef: &agentv1alpha1.TargetRef{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       deploymentName,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, ac)).To(Succeed())
+		defer func() {
+			got := &agentv1alpha1.AgentCard{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: agentCardName, Namespace: namespace}, got); err == nil {
+				got.Finalizers = nil
+				_ = k8sClient.Update(ctx, got)
+				_ = k8sClient.Delete(ctx, got)
+			}
+		}()
+
+		nn := types.NamespacedName{Name: agentCardName, Namespace: namespace}
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &agentv1alpha1.AgentCard{}
+		Expect(k8sClient.Get(ctx, nn, updated)).To(Succeed())
+		synced := findCondition(updated.Status.Conditions, "Synced")
+		Expect(synced).NotTo(BeNil())
+		Expect(synced.Status).To(Equal(metav1.ConditionFalse))
+		Expect(synced.Reason).To(Equal("NoProtocol"))
 	})
 })
 

@@ -431,8 +431,7 @@ func main() {
 	}
 
 	// AuthBridge sidecar injection webhook
-	// nolint:goconst
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+	if authBridgeWebhooksEnabled() {
 		podMutator := injector.NewPodMutator(
 			mgr.GetClient(),
 			enableClientRegistration,
@@ -477,6 +476,13 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// authBridgeWebhooksEnabled reports whether AuthBridge mutating webhooks should be registered.
+// Set ENABLE_WEBHOOKS=false to skip registration (tests, minimal deployments).
+func authBridgeWebhooksEnabled() bool {
+	return os.Getenv("ENABLE_WEBHOOKS") != "false"
+}
+
 func getNamespacesToWatch() map[string]cache.Config {
 	namespace := strings.TrimSpace(os.Getenv("NAMESPACES2WATCH"))
 	if namespace == "" {

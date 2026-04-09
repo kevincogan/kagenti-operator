@@ -217,6 +217,29 @@ var _ = Describe("AgentRuntime Config", func() {
 			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
 
+		It("should change when injectTools (Auth Bridge tool injection gate) changes", func() {
+			fg := createClusterFeatureGates(ctx, map[string]string{
+				"globalEnabled": "true",
+				"injectTools":   "false",
+			})
+			defer func() { _ = k8sClient.Delete(ctx, fg) }()
+
+			spec := &agentv1alpha1.AgentRuntimeSpec{
+				Type:      agentv1alpha1.RuntimeTypeAgent,
+				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-inject-tools"},
+			}
+
+			r1, err := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			Expect(err).NotTo(HaveOccurred())
+
+			fg.Data["injectTools"] = "true"
+			Expect(k8sClient.Update(ctx, fg)).To(Succeed())
+
+			r2, err := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r1.Hash).NotTo(Equal(r2.Hash))
+		})
+
 		It("should change when namespace defaults change", func() {
 			nsCM := createNamespaceDefaults(ctx, "ns-defaults-hash", namespace, map[string]string{"sampling-rate": "0.1"})
 			defer func() { _ = k8sClient.Delete(ctx, nsCM) }()

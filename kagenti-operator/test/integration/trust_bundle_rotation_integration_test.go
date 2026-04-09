@@ -260,4 +260,3 @@ func createNamespace(t *testing.T, ctx context.Context, name string) *corev1.Nam
 	t.Logf("  Using namespace: %s", name)
 	return ns
 }
-
