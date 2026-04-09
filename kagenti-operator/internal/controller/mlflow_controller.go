@@ -205,7 +205,7 @@ func (r *MLflowReconciler) resolveTrackingURI(ctx context.Context) string {
 func mlflowEnvVars(trackingURI, experimentID, experimentName string) map[string]string {
 	return map[string]string{
 		"MLFLOW_TRACKING_URI":              trackingURI,
-		"MLFLOW_TRACKING_AUTH":             "kubernetes",
+		"MLFLOW_TRACKING_AUTH":             "kubernetes-namespaced",
 		"MLFLOW_EXPERIMENT_ID":             experimentID,
 		"MLFLOW_EXPERIMENT_NAME":           experimentName,
 		"MLFLOW_TRACKING_SERVER_CERT_PATH": "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt",
@@ -231,7 +231,7 @@ func (r *MLflowReconciler) configureDeployment(ctx context.Context, dep *appsv1.
 		annotations[AnnotationMLflowExperimentID] = experimentID
 		annotations[AnnotationMLflowExperimentName] = experimentName
 		annotations[AnnotationMLflowTrackingURI] = trackingURI
-		annotations[AnnotationMLflowTrackingAuth] = "kubernetes"
+		annotations[AnnotationMLflowTrackingAuth] = "kubernetes-namespaced"
 		latest.Spec.Template.Annotations = annotations
 
 		changed := false
