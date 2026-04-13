@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2026.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -203,34 +203,39 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyWebhookEndpointReady).Should(Succeed())
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
-			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
-				"--namespace", namespace,
-				"--image=curlimages/curl:latest",
-				"--overrides",
-				fmt.Sprintf(`{
-					"spec": {
-						"containers": [{
-							"name": "curl",
-							"image": "curlimages/curl:latest",
-							"command": ["/bin/sh", "-c"],
-							"args": ["curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics"],
-							"securityContext": {
-								"allowPrivilegeEscalation": false,
-								"capabilities": {
-									"drop": ["ALL"]
-								},
-								"runAsNonRoot": true,
-								"runAsUser": 1000,
-								"seccompProfile": {
-									"type": "RuntimeDefault"
+			Eventually(func() error {
+				cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
+					"--namespace", namespace,
+					"--image=curlimages/curl:latest",
+					"--overrides",
+					fmt.Sprintf(`{
+						"spec": {
+							"containers": [{
+								"name": "curl",
+								"image": "curlimages/curl:latest",
+								"command": ["/bin/sh", "-c"],
+								"args": ["curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics"],
+								"securityContext": {
+									"allowPrivilegeEscalation": false,
+									"capabilities": {
+										"drop": ["ALL"]
+									},
+									"runAsNonRoot": true,
+									"runAsUser": 1000,
+									"seccompProfile": {
+										"type": "RuntimeDefault"
+									}
 								}
-							}
-						}],
-						"serviceAccount": "%s"
-					}
-				}`, token, metricsServiceName, namespace, serviceAccountName))
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
+							}],
+							"serviceAccountName": "%s"
+						}
+					}`, token, metricsServiceName, namespace, serviceAccountName))
+				_, runErr := utils.Run(cmd)
+				if runErr != nil && strings.Contains(runErr.Error(), "already exists") {
+					return nil
+				}
+				return runErr
+			}, 1*time.Minute, 5*time.Second).Should(Succeed(), "Failed to create curl-metrics pod")
 
 			By("waiting for the curl-metrics pod to complete.")
 			verifyCurlUp := func(g Gomega) {
@@ -634,6 +639,477 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(boundStatus).To(Equal("True"))
 			}).Should(Succeed())
+		})
+	})
+})
+
+var _ = Describe("AgentRuntime E2E", Ordered, func() {
+	const controllerNamespace = "kagenti-operator-system"
+
+	BeforeAll(func() {
+		By("ensuring mlflow-operator ClusterRole exists for ServiceAccount informer")
+		clusterRoleCmd := exec.Command("kubectl", "apply", "-f", "-")
+		clusterRoleCmd.Stdin = strings.NewReader(`apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mlflow-operator-mlflow-integration
+rules:
+- apiGroups: [""]
+  resources: ["serviceaccounts"]
+  verbs: ["list", "watch"]
+`)
+		_, _ = utils.Run(clusterRoleCmd)
+
+		Expect(utils.DeployController(controllerNamespace, projectImage)).To(Succeed(), "Failed to deploy controller")
+
+		By("waiting for controller-manager to be ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", controllerNamespace,
+				"-o", "go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}{{ .status.phase }}{{ end }}{{ end }}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(ContainSubstring("Running"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("waiting for webhook endpoint to be ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "endpoints",
+				"kagenti-operator-webhook-service", "-n", controllerNamespace,
+				"-o", "jsonpath={.subsets[0].addresses[0].ip}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).NotTo(BeEmpty(), "webhook endpoint not yet populated")
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("creating test namespace")
+		cmd := exec.Command("kubectl", "create", "ns", agentRuntimeTestNamespace)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", agentRuntimeTestNamespace,
+			"pod-security.kubernetes.io/enforce=restricted")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("ensuring kagenti-system namespace exists")
+		cmd = exec.Command("kubectl", "create", "ns", "kagenti-system")
+		_, _ = utils.Run(cmd) // ignore error; namespace may already exist
+
+		By("creating cluster defaults ConfigMap")
+		_, err = utils.KubectlApplyStdin(runtimeClusterDefaultsConfigMapFixture(), "kagenti-system")
+		Expect(err).NotTo(HaveOccurred())
+
+		By("creating namespace defaults ConfigMap")
+		_, err = utils.KubectlApplyStdin(runtimeNamespaceDefaultsConfigMapFixture(), agentRuntimeTestNamespace)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterAll(func() {
+		By("deleting test namespace")
+		cmd := exec.Command("kubectl", "delete", "ns", agentRuntimeTestNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("cleaning up cluster defaults ConfigMap")
+		cmd = exec.Command("kubectl", "delete", "configmap", "kagenti-platform-config",
+			"-n", "kagenti-system", "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("cleaning up mlflow-operator ClusterRole")
+		cmd = exec.Command("kubectl", "delete", "clusterrole",
+			"mlflow-operator-mlflow-integration", "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		utils.UndeployController()
+	})
+
+	AfterEach(func() {
+		if CurrentSpecReport().Failed() {
+			// Dump controller logs
+			cmd := exec.Command("kubectl", "logs", "-l", "control-plane=controller-manager",
+				"-n", controllerNamespace, "--tail=100")
+			logs, err := utils.Run(cmd)
+			if err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n%s\n", logs)
+			}
+
+			// Dump events in test namespace
+			cmd = exec.Command("kubectl", "get", "events", "-n", agentRuntimeTestNamespace, "--sort-by=.lastTimestamp")
+			events, err := utils.Run(cmd)
+			if err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Events:\n%s\n", events)
+			}
+
+			// Dump AgentRuntimes
+			cmd = exec.Command("kubectl", "get", "agentruntimes", "-n", agentRuntimeTestNamespace, "-o", "yaml")
+			runtimes, err := utils.Run(cmd)
+			if err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "AgentRuntimes:\n%s\n", runtimes)
+			}
+
+			// Dump Deployments
+			cmd = exec.Command("kubectl", "get", "deployments", "-n", agentRuntimeTestNamespace, "-o", "yaml")
+			deploys, err := utils.Run(cmd)
+			if err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Deployments:\n%s\n", deploys)
+			}
+		}
+	})
+
+	SetDefaultEventuallyTimeout(2 * time.Minute)
+	SetDefaultEventuallyPollingInterval(time.Second)
+
+	Context("Agent lifecycle", Ordered, func() {
+		var initialConfigHash string
+
+		It("should apply labels and config-hash to target Deployment", func() {
+			By("deploying the agent target workload")
+			_, err := utils.KubectlApplyStdin(runtimeTargetDeploymentFixture(), agentRuntimeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(utils.WaitForDeploymentReady("runtime-agent-target", agentRuntimeTestNamespace, 2*time.Minute)).To(Succeed())
+
+			By("creating AgentRuntime CR")
+			_, err = utils.KubectlApplyStdin(runtimeAgentCRFixture(), agentRuntimeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying kagenti.io/type=agent on workload metadata")
+			Eventually(func(g Gomega) {
+				typeLabel, err := utils.KubectlGetJsonpath("deployment", "runtime-agent-target",
+					agentRuntimeTestNamespace, "{.metadata.labels['kagenti\\.io/type']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(typeLabel).To(Equal("agent"))
+			}).Should(Succeed())
+
+			By("verifying app.kubernetes.io/managed-by on workload metadata")
+			Eventually(func(g Gomega) {
+				managedBy, err := utils.KubectlGetJsonpath("deployment", "runtime-agent-target",
+					agentRuntimeTestNamespace, "{.metadata.labels['app\\.kubernetes\\.io/managed-by']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(managedBy).To(Equal("kagenti-operator"))
+			}).Should(Succeed())
+
+			By("verifying kagenti.io/type=agent on pod template")
+			Eventually(func(g Gomega) {
+				podTypeLabel, err := utils.KubectlGetJsonpath("deployment", "runtime-agent-target",
+					agentRuntimeTestNamespace,
+					"{.spec.template.metadata.labels['kagenti\\.io/type']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(podTypeLabel).To(Equal("agent"))
+			}).Should(Succeed())
+
+			By("verifying config-hash annotation on pod template")
+			Eventually(func(g Gomega) {
+				hash, err := utils.KubectlGetJsonpath("deployment", "runtime-agent-target",
+					agentRuntimeTestNamespace,
+					"{.spec.template.metadata.annotations['kagenti\\.io/config-hash']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(hash).NotTo(BeEmpty())
+				g.Expect(hash).To(HaveLen(64))
+				initialConfigHash = hash
+			}).Should(Succeed())
+
+			By("verifying AgentCard is auto-created by AgentCardSync")
+			cardName := "runtime-agent-target-deployment-card"
+			Eventually(func(g Gomega) {
+				managedBy, err := utils.KubectlGetJsonpath("agentcard", cardName,
+					agentRuntimeTestNamespace,
+					"{.metadata.labels['app\\.kubernetes\\.io/managed-by']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(managedBy).To(Equal("kagenti-operator"))
+			}).Should(Succeed())
+
+			By("verifying AgentCard targetRef points to the runtime target")
+			Eventually(func(g Gomega) {
+				kind, err := utils.KubectlGetJsonpath("agentcard", cardName,
+					agentRuntimeTestNamespace, "{.spec.targetRef.kind}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(kind).To(Equal("Deployment"))
+
+				name, err := utils.KubectlGetJsonpath("agentcard", cardName,
+					agentRuntimeTestNamespace, "{.spec.targetRef.name}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(name).To(Equal("runtime-agent-target"))
+			}).Should(Succeed())
+		})
+
+		It("should set Phase=Active and Ready=True", func() {
+			By("verifying phase is Active")
+			Eventually(func(g Gomega) {
+				phase, err := utils.KubectlGetJsonpath("agentruntime", "test-agent-runtime",
+					agentRuntimeTestNamespace, "{.status.phase}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(phase).To(Equal("Active"))
+			}).Should(Succeed())
+
+			By("verifying Ready condition is True")
+			Eventually(func(g Gomega) {
+				readyStatus, err := utils.KubectlGetJsonpath("agentruntime", "test-agent-runtime",
+					agentRuntimeTestNamespace,
+					"{.status.conditions[?(@.type=='Ready')].status}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(readyStatus).To(Equal("True"))
+			}).Should(Succeed())
+		})
+
+		It("should not change Deployment generation on re-reconcile", func() {
+			By("recording current deployment generation")
+			gen, err := utils.KubectlGetJsonpath("deployment", "runtime-agent-target",
+				agentRuntimeTestNamespace, "{.metadata.generation}")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(gen).NotTo(BeEmpty())
+
+			By("verifying generation stays stable for 30s")
+			Consistently(func(g Gomega) {
+				currentGen, err := utils.KubectlGetJsonpath("deployment", "runtime-agent-target",
+					agentRuntimeTestNamespace, "{.metadata.generation}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(currentGen).To(Equal(gen))
+			}, 30*time.Second, 5*time.Second).Should(Succeed())
+		})
+
+		// Note: the AgentCard auto-created by AgentCardSync (runtime-agent-target-deployment-card)
+		// persists after AgentRuntime deletion because kagenti.io/type=agent is preserved on the
+		// Deployment and AgentCardSync owns the card independently of the AgentRuntime lifecycle.
+		It("should clean up on deletion", func() {
+			By("deleting the AgentRuntime CR")
+			cmd := exec.Command("kubectl", "delete", "agentruntime", "test-agent-runtime",
+				"-n", agentRuntimeTestNamespace)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying AgentRuntime CR is gone")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "agentruntime", "test-agent-runtime",
+					"-n", agentRuntimeTestNamespace)
+				_, err := cmd.CombinedOutput()
+				g.Expect(err).To(HaveOccurred(), "AgentRuntime should be deleted")
+			}).Should(Succeed())
+
+			By("verifying target deployment still exists")
+			cmd = exec.Command("kubectl", "get", "deployment", "runtime-agent-target",
+				"-n", agentRuntimeTestNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying kagenti.io/type label is preserved")
+			Eventually(func(g Gomega) {
+				typeLabel, err := utils.KubectlGetJsonpath("deployment", "runtime-agent-target",
+					agentRuntimeTestNamespace, "{.metadata.labels['kagenti\\.io/type']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(typeLabel).To(Equal("agent"))
+			}).Should(Succeed())
+
+			By("verifying managed-by label is removed")
+			Eventually(func(g Gomega) {
+				managedBy, err := utils.KubectlGetJsonpath("deployment", "runtime-agent-target",
+					agentRuntimeTestNamespace, "{.metadata.labels['app\\.kubernetes\\.io/managed-by']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(managedBy).To(BeEmpty())
+			}).Should(Succeed())
+
+			By("verifying config-hash changed to defaults-only hash")
+			Eventually(func(g Gomega) {
+				hash, err := utils.KubectlGetJsonpath("deployment", "runtime-agent-target",
+					agentRuntimeTestNamespace,
+					"{.spec.template.metadata.annotations['kagenti\\.io/config-hash']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(hash).NotTo(BeEmpty())
+				g.Expect(hash).To(HaveLen(64))
+				g.Expect(hash).NotTo(Equal(initialConfigHash))
+			}).Should(Succeed())
+		})
+	})
+
+	Context("Error cases", func() {
+		It("should set Phase=Error for missing target", func() {
+			By("creating AgentRuntime targeting non-existent deployment")
+			_, err := utils.KubectlApplyStdin(runtimeMissingTargetCRFixture(), agentRuntimeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying phase is Error")
+			Eventually(func(g Gomega) {
+				phase, err := utils.KubectlGetJsonpath("agentruntime", "test-missing-target",
+					agentRuntimeTestNamespace, "{.status.phase}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(phase).To(Equal("Error"))
+			}).Should(Succeed())
+
+			By("verifying TargetResolved condition mentions the target")
+			Eventually(func(g Gomega) {
+				msg, err := utils.KubectlGetJsonpath("agentruntime", "test-missing-target",
+					agentRuntimeTestNamespace,
+					"{.status.conditions[?(@.type=='TargetResolved')].message}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(msg).To(ContainSubstring("nonexistent-deployment"))
+			}).Should(Succeed())
+
+			By("cleaning up")
+			cmd := exec.Command("kubectl", "delete", "agentruntime", "test-missing-target",
+				"-n", agentRuntimeTestNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+	})
+
+	Context("Tool type", func() {
+		It("should apply kagenti.io/type=tool label", func() {
+			By("deploying the tool target workload")
+			_, err := utils.KubectlApplyStdin(runtimeToolTargetDeploymentFixture(), agentRuntimeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(utils.WaitForDeploymentReady("runtime-tool-target", agentRuntimeTestNamespace, 2*time.Minute)).To(Succeed())
+
+			By("creating tool AgentRuntime CR")
+			_, err = utils.KubectlApplyStdin(runtimeToolCRFixture(), agentRuntimeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying kagenti.io/type=tool on workload metadata")
+			Eventually(func(g Gomega) {
+				typeLabel, err := utils.KubectlGetJsonpath("deployment", "runtime-tool-target",
+					agentRuntimeTestNamespace, "{.metadata.labels['kagenti\\.io/type']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(typeLabel).To(Equal("tool"))
+			}).Should(Succeed())
+
+			By("verifying no AgentCard is created for tool-type workload")
+			Consistently(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "agentcards", "-n", agentRuntimeTestNamespace,
+					"-o", "jsonpath={.items[*].metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(ContainSubstring("runtime-tool-target"))
+			}, 15*time.Second, 3*time.Second).Should(Succeed())
+
+			By("cleaning up")
+			cmd := exec.Command("kubectl", "delete", "agentruntime", "test-tool-runtime",
+				"-n", agentRuntimeTestNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+	})
+
+	Context("StatefulSet target", func() {
+		It("should apply labels and config-hash to a StatefulSet workload", func() {
+			By("deploying the StatefulSet target workload")
+			_, err := utils.KubectlApplyStdin(runtimeStatefulSetTargetFixture(), agentRuntimeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for StatefulSet to be ready")
+			Eventually(func(g Gomega) {
+				ready, err := utils.KubectlGetJsonpath("statefulset", "runtime-sts-target",
+					agentRuntimeTestNamespace, "{.status.readyReplicas}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(ready).To(Equal("1"))
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("creating AgentRuntime CR targeting StatefulSet")
+			_, err = utils.KubectlApplyStdin(runtimeStatefulSetCRFixture(), agentRuntimeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying kagenti.io/type=agent on StatefulSet metadata")
+			Eventually(func(g Gomega) {
+				typeLabel, err := utils.KubectlGetJsonpath("statefulset", "runtime-sts-target",
+					agentRuntimeTestNamespace, "{.metadata.labels['kagenti\\.io/type']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(typeLabel).To(Equal("agent"))
+			}).Should(Succeed())
+
+			By("verifying app.kubernetes.io/managed-by on StatefulSet metadata")
+			Eventually(func(g Gomega) {
+				managedBy, err := utils.KubectlGetJsonpath("statefulset", "runtime-sts-target",
+					agentRuntimeTestNamespace, "{.metadata.labels['app\\.kubernetes\\.io/managed-by']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(managedBy).To(Equal("kagenti-operator"))
+			}).Should(Succeed())
+
+			By("verifying Phase=Active")
+			Eventually(func(g Gomega) {
+				phase, err := utils.KubectlGetJsonpath("agentruntime", "test-sts-runtime",
+					agentRuntimeTestNamespace, "{.status.phase}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(phase).To(Equal("Active"))
+			}).Should(Succeed())
+
+			By("verifying config-hash on pod template")
+			Eventually(func(g Gomega) {
+				hash, err := utils.KubectlGetJsonpath("statefulset", "runtime-sts-target",
+					agentRuntimeTestNamespace,
+					"{.spec.template.metadata.annotations['kagenti\\.io/config-hash']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(hash).To(HaveLen(64))
+			}).Should(Succeed())
+
+			By("cleaning up")
+			cmd := exec.Command("kubectl", "delete", "agentruntime", "test-sts-runtime",
+				"-n", agentRuntimeTestNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+	})
+
+	Context("Identity and trace overrides", func() {
+		It("should produce a different config-hash than a minimal CR", func() {
+			By("deploying two target workloads")
+			_, err := utils.KubectlApplyStdin(runtimeMinimalTargetDeploymentFixture(), agentRuntimeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = utils.KubectlApplyStdin(runtimeOverridesTargetDeploymentFixture(), agentRuntimeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(utils.WaitForDeploymentReady(
+				"runtime-minimal-target", agentRuntimeTestNamespace, 2*time.Minute)).To(Succeed())
+			Expect(utils.WaitForDeploymentReady(
+				"runtime-overrides-target", agentRuntimeTestNamespace, 2*time.Minute)).To(Succeed())
+
+			By("creating minimal AgentRuntime CR (no overrides)")
+			_, err = utils.KubectlApplyStdin(runtimeMinimalCRFixture(), agentRuntimeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating AgentRuntime CR with identity and trace overrides")
+			_, err = utils.KubectlApplyStdin(runtimeOverridesCRFixture(), agentRuntimeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			var minimalHash, overridesHash string
+
+			By("waiting for minimal CR to reach Active")
+			Eventually(func(g Gomega) {
+				phase, err := utils.KubectlGetJsonpath("agentruntime", "test-minimal-runtime",
+					agentRuntimeTestNamespace, "{.status.phase}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(phase).To(Equal("Active"))
+			}).Should(Succeed())
+
+			By("recording minimal config-hash")
+			Eventually(func(g Gomega) {
+				hash, err := utils.KubectlGetJsonpath("deployment", "runtime-minimal-target",
+					agentRuntimeTestNamespace,
+					"{.spec.template.metadata.annotations['kagenti\\.io/config-hash']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(hash).To(HaveLen(64))
+				minimalHash = hash
+			}).Should(Succeed())
+
+			By("waiting for overrides CR to reach Active")
+			Eventually(func(g Gomega) {
+				phase, err := utils.KubectlGetJsonpath("agentruntime", "test-overrides-runtime",
+					agentRuntimeTestNamespace, "{.status.phase}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(phase).To(Equal("Active"))
+			}).Should(Succeed())
+
+			By("recording overrides config-hash")
+			Eventually(func(g Gomega) {
+				hash, err := utils.KubectlGetJsonpath("deployment", "runtime-overrides-target",
+					agentRuntimeTestNamespace,
+					"{.spec.template.metadata.annotations['kagenti\\.io/config-hash']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(hash).To(HaveLen(64))
+				overridesHash = hash
+			}).Should(Succeed())
+
+			By("verifying config-hashes differ")
+			Expect(overridesHash).NotTo(Equal(minimalHash),
+				"identity/trace overrides should produce a different config-hash")
+
+			By("cleaning up")
+			cmd := exec.Command("kubectl", "delete", "agentruntime", "test-minimal-runtime", "test-overrides-runtime",
+				"-n", agentRuntimeTestNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
 		})
 	})
 })

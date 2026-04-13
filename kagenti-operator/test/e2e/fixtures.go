@@ -465,3 +465,334 @@ spec:
       agentcard: "true"
 `
 }
+
+// --- AgentRuntime E2E fixtures ---
+
+const agentRuntimeTestNamespace = "e2e-agentruntime-test"
+
+// runtimeTargetDeploymentFixture returns YAML for the agent target Deployment (pause container).
+// Includes protocol label to test cross-controller interaction with AgentCardSync.
+func runtimeTargetDeploymentFixture() string {
+	return `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-agent-target
+  namespace: ` + agentRuntimeTestNamespace + `
+  labels:
+    app.kubernetes.io/name: runtime-agent-target
+    protocol.kagenti.io/a2a: ""
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-agent-target
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runtime-agent-target
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+`
+}
+
+// runtimeAgentCRFixture returns YAML for an AgentRuntime CR with type=agent.
+func runtimeAgentCRFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: test-agent-runtime
+  namespace: ` + agentRuntimeTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: runtime-agent-target
+`
+}
+
+// runtimeMissingTargetCRFixture returns YAML for an AgentRuntime CR targeting a non-existent deployment.
+func runtimeMissingTargetCRFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: test-missing-target
+  namespace: ` + agentRuntimeTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nonexistent-deployment
+`
+}
+
+// runtimeToolTargetDeploymentFixture returns YAML for the tool target Deployment (pause container, no protocol labels).
+func runtimeToolTargetDeploymentFixture() string {
+	return `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-tool-target
+  namespace: ` + agentRuntimeTestNamespace + `
+  labels:
+    app.kubernetes.io/name: runtime-tool-target
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-tool-target
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runtime-tool-target
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+`
+}
+
+// runtimeToolCRFixture returns YAML for an AgentRuntime CR with type=tool.
+func runtimeToolCRFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: test-tool-runtime
+  namespace: ` + agentRuntimeTestNamespace + `
+spec:
+  type: tool
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: runtime-tool-target
+`
+}
+
+// runtimeClusterDefaultsConfigMapFixture returns YAML for the cluster-level defaults ConfigMap
+// in kagenti-system namespace (layer 1 of 3-layer config merge).
+func runtimeClusterDefaultsConfigMapFixture() string {
+	return `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kagenti-platform-config
+  namespace: kagenti-system
+data:
+  trace.endpoint: "http://otel-collector.observability:4317"
+`
+}
+
+// runtimeNamespaceDefaultsConfigMapFixture returns YAML for the namespace-level defaults ConfigMap
+// (layer 2 of 3-layer config merge). Must have kagenti.io/defaults=true label.
+func runtimeNamespaceDefaultsConfigMapFixture() string {
+	return `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runtime-ns-defaults
+  namespace: ` + agentRuntimeTestNamespace + `
+  labels:
+    kagenti.io/defaults: "true"
+data:
+  log.level: debug
+`
+}
+
+// runtimeStatefulSetTargetFixture returns YAML for a StatefulSet target with headless Service.
+func runtimeStatefulSetTargetFixture() string {
+	return `apiVersion: v1
+kind: Service
+metadata:
+  name: runtime-sts-target
+  namespace: ` + agentRuntimeTestNamespace + `
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: runtime-sts-target
+  ports:
+    - port: 80
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: runtime-sts-target
+  namespace: ` + agentRuntimeTestNamespace + `
+  labels:
+    app.kubernetes.io/name: runtime-sts-target
+spec:
+  serviceName: runtime-sts-target
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-sts-target
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runtime-sts-target
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+`
+}
+
+// runtimeStatefulSetCRFixture returns YAML for an AgentRuntime CR targeting a StatefulSet.
+func runtimeStatefulSetCRFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: test-sts-runtime
+  namespace: ` + agentRuntimeTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: runtime-sts-target
+`
+}
+
+// runtimeMinimalTargetDeploymentFixture returns YAML for a minimal target Deployment (baseline for hash comparison).
+func runtimeMinimalTargetDeploymentFixture() string {
+	return `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-minimal-target
+  namespace: ` + agentRuntimeTestNamespace + `
+  labels:
+    app.kubernetes.io/name: runtime-minimal-target
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-minimal-target
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runtime-minimal-target
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+`
+}
+
+// runtimeMinimalCRFixture returns YAML for an AgentRuntime CR without overrides (baseline for hash comparison).
+func runtimeMinimalCRFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: test-minimal-runtime
+  namespace: ` + agentRuntimeTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: runtime-minimal-target
+`
+}
+
+// runtimeOverridesTargetDeploymentFixture returns YAML for the overrides test target Deployment.
+func runtimeOverridesTargetDeploymentFixture() string {
+	return `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-overrides-target
+  namespace: ` + agentRuntimeTestNamespace + `
+  labels:
+    app.kubernetes.io/name: runtime-overrides-target
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-overrides-target
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runtime-overrides-target
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+`
+}
+
+// runtimeOverridesCRFixture returns YAML for an AgentRuntime CR with identity and trace overrides.
+func runtimeOverridesCRFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: test-overrides-runtime
+  namespace: ` + agentRuntimeTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: runtime-overrides-target
+  identity:
+    spiffe:
+      trustDomain: custom.example.com
+  trace:
+    endpoint: "custom-collector.observability:4317"
+    protocol: grpc
+    sampling:
+      rate: 0.5
+`
+}
