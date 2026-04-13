@@ -65,6 +65,26 @@ jobs:
           go mod tidy
           make test-e2e
 
+  test-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6
+        with:
+          go-version-file: kagenti-operator/go.mod
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Create Kind cluster
+        run: kind create cluster
+      - name: Run integration tests
+        run: |
+          go mod tidy
+          make test-integration
+
   build:
     name: Build
     runs-on: ubuntu-latest

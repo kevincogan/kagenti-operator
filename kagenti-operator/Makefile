@@ -26,6 +26,7 @@ OS := $(shell go env GOOS)
 # override this by running 'make CLUSTER=your-cluster-name ...' or by setting the CLUSTER environment variable.
 CLUSTER ?= kagenti
 CONTEXT ?= kind-kagenti
+INTEGRATION_TAGS ?= integration
 
 HELM_IMG := --set controllerManager.container.image.repository=${LOCAL_REGISTRY}/${CMD_NAME} --set controllerManager.container.image.tag=${IMAGE_TAG}
 HELM_OPTS ?= ${HELM_IMG}
@@ -93,6 +94,19 @@ test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated 
 		exit 1; \
 	}
 	go test ./test/e2e/ -v -ginkgo.v -timeout 30m
+
+.PHONY: test-integration
+test-integration: manifests generate fmt vet ## Run integration tests (requires Kind cluster)
+	@command -v kind >/dev/null 2>&1 || { \
+		echo "ERROR: kind is not installed. Install from https://kind.sigs.k8s.io/"; \
+		exit 1; \
+	}
+	@kind get clusters | grep -q 'kind' || { \
+		echo "ERROR: no Kind cluster found. Create one with: kind create cluster"; \
+		exit 1; \
+	}
+	$(MAKE) install
+	go test -v -tags=$(INTEGRATION_TAGS) ./test/integration/... -timeout 5m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

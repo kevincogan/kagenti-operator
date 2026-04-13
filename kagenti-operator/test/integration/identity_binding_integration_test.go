@@ -140,6 +140,10 @@ func testMatchingBindingEvaluation(t *testing.T) {
 	t.Log("TEST 1: Matching Binding Evaluation")
 	t.Log("========================================")
 
+	// Create the ServiceAccount referenced by the Deployment so pods can start.
+	sa := createServiceAccount(t, ctx, testNamespace, saName)
+	defer deleteResource(ctx, sa)
+
 	// Create Deployment with agent labels
 	deployment := createTestDeployment(t, ctx, testNamespace, deploymentName, saName, 1)
 	defer deleteResource(ctx, deployment)
@@ -153,13 +157,19 @@ func testMatchingBindingEvaluation(t *testing.T) {
 	agentCard := createTestAgentCard(t, ctx, testNamespace, cardName, deploymentName, trustDomain, false)
 	defer deleteResource(ctx, agentCard)
 
+	// Wait for the Deployment to become Available — the reconciler checks
+	// workload readiness and returns early if the Deployment is not ready,
+	// which would leave BindingStatus nil.
+	waitForDeploymentAvailable(t, ctx, deploymentName, testNamespace, 30*time.Second)
+
 	// Create and run AgentCard reconciler with a mock signature provider that
 	// returns the expected SPIFFE ID, so the reconciler exercises the full
 	// binding evaluation path (not just pre-set status).
 	reconciler := &controller.AgentCardReconciler{
-		Client:       k8sClient,
-		Scheme:       scheme,
-		AgentFetcher: &mockFetcher{},
+		Client:           k8sClient,
+		Scheme:           scheme,
+		AgentFetcher:     &mockFetcher{},
+		RequireSignature: true,
 		SignatureProvider: &mockSignatureProvider{
 			spiffeID: expectedSpiffeID,
 			verified: true,
@@ -213,6 +223,10 @@ func testNonMatchingBindingEvaluation(t *testing.T) {
 	t.Log("TEST 2: Non-Matching Binding Evaluation")
 	t.Log("========================================")
 
+	// Create the ServiceAccount referenced by the Deployment so pods can start.
+	sa := createServiceAccount(t, ctx, testNamespace, saName)
+	defer deleteResource(ctx, sa)
+
 	// Create Deployment with agent labels
 	deployment := createTestDeployment(t, ctx, testNamespace, deploymentName, saName, 1)
 	defer deleteResource(ctx, deployment)
@@ -225,15 +239,20 @@ func testNonMatchingBindingEvaluation(t *testing.T) {
 	agentCard := createTestAgentCard(t, ctx, testNamespace, cardName, deploymentName, trustDomain, false)
 	defer deleteResource(ctx, agentCard)
 
-	// The workload's actual SPIFFE ID (from mock provider) does NOT match the allowlist
-	actualSpiffeID := fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", trustDomain, testNamespace, saName)
+	// Wait for the Deployment to become Available before reconciling.
+	waitForDeploymentAvailable(t, ctx, deploymentName, testNamespace, 30*time.Second)
+
+	// The workload's actual SPIFFE ID (from mock provider) is from a different
+	// trust domain, so it does NOT match the AgentCard's trust domain.
+	actualSpiffeID := fmt.Sprintf("spiffe://other-domain/ns/%s/sa/%s", testNamespace, saName)
 
 	// Create and run AgentCard reconciler with a mock provider returning the actual
 	// (non-matching) SPIFFE ID
 	reconciler := &controller.AgentCardReconciler{
-		Client:       k8sClient,
-		Scheme:       scheme,
-		AgentFetcher: &mockFetcher{},
+		Client:           k8sClient,
+		Scheme:           scheme,
+		AgentFetcher:     &mockFetcher{},
+		RequireSignature: true,
 		SignatureProvider: &mockSignatureProvider{
 			spiffeID: actualSpiffeID,
 			verified: true,
@@ -364,6 +383,18 @@ func createTestDeployment(t *testing.T, ctx context.Context, ns, name, saName st
 
 	t.Logf("  Created Deployment: %s (replicas=%d)", name, replicas)
 	return deployment
+}
+
+func createServiceAccount(t *testing.T, ctx context.Context, ns, name string) *corev1.ServiceAccount {
+	t.Helper()
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+	}
+	if err := k8sClient.Create(ctx, sa); err != nil {
+		t.Fatalf("Failed to create ServiceAccount: %v", err)
+	}
+	t.Logf("  Created ServiceAccount: %s", name)
+	return sa
 }
 
 func deleteResource(ctx context.Context, obj client.Object) {
