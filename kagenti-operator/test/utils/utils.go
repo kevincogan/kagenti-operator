@@ -537,7 +537,9 @@ func EnsureCertManagerWebhookReady(timeout time.Duration) error {
 		}
 		time.Sleep(5 * time.Second)
 	}
-	return fmt.Errorf("cert-manager webhook did not become ready within 60s (after waiting up to %v for deployment)", timeout)
+	return fmt.Errorf(
+		"cert-manager webhook did not become ready within 60s "+
+			"(after waiting up to %v for deployment)", timeout)
 }
 
 // certManagerWebhookProbe returns true if the cert-manager webhook is serving valid TLS.

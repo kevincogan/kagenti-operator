@@ -444,7 +444,11 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 					authBridgeTestNamespace,
 					"{.items[?(@.metadata.labels.app\\.kubernetes\\.io/name=='authbridge-agent')].spec.volumes[*].name}")
 				g.Expect(err).NotTo(HaveOccurred())
-				for _, vol := range []string{"shared-data", "spire-agent-socket", "spiffe-helper-config", "svid-output", "envoy-config", "authproxy-routes"} {
+				expectedVolumes := []string{
+					"shared-data", "spire-agent-socket", "spiffe-helper-config",
+					"svid-output", "envoy-config", "authproxy-routes",
+				}
+				for _, vol := range expectedVolumes {
 					g.Expect(volumes).To(ContainSubstring(vol), "expected volume %s", vol)
 				}
 			}).Should(Succeed())
@@ -521,7 +525,9 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("waiting for deployment to be ready")
-			Expect(utils.WaitForDeploymentReady("authbridge-disabled-agent", authBridgeTestNamespace, 2*time.Minute)).To(Succeed())
+			Expect(utils.WaitForDeploymentReady(
+				"authbridge-disabled-agent", authBridgeTestNamespace, 2*time.Minute,
+			)).To(Succeed())
 
 			By("verifying only pause container, no sidecars")
 			cmd := exec.Command("kubectl", "get", "pods",
