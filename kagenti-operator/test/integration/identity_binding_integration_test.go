@@ -153,6 +153,11 @@ func testMatchingBindingEvaluation(t *testing.T) {
 	agentCard := createTestAgentCard(t, ctx, testNamespace, cardName, deploymentName, trustDomain, false)
 	defer deleteResource(ctx, agentCard)
 
+	// Wait for the Deployment to become Available — the reconciler checks
+	// workload readiness and returns early if the Deployment is not ready,
+	// which would leave BindingStatus nil.
+	waitForDeploymentAvailable(t, ctx, deploymentName, testNamespace, 30*time.Second)
+
 	// Create and run AgentCard reconciler with a mock signature provider that
 	// returns the expected SPIFFE ID, so the reconciler exercises the full
 	// binding evaluation path (not just pre-set status).
@@ -224,6 +229,9 @@ func testNonMatchingBindingEvaluation(t *testing.T) {
 	// Create AgentCard with NON-matching SPIFFE ID in allowlist using targetRef
 	agentCard := createTestAgentCard(t, ctx, testNamespace, cardName, deploymentName, trustDomain, false)
 	defer deleteResource(ctx, agentCard)
+
+	// Wait for the Deployment to become Available before reconciling.
+	waitForDeploymentAvailable(t, ctx, deploymentName, testNamespace, 30*time.Second)
 
 	// The workload's actual SPIFFE ID (from mock provider) does NOT match the allowlist
 	actualSpiffeID := fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", trustDomain, testNamespace, saName)
