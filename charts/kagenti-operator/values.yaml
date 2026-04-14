@@ -92,6 +92,12 @@ networkPolicy:
 mlflow:
   enable: false
 
+# [OPERATOR SIGNING]: Operator signs agent cards with its own SPIFFE identity
+# Replaces the init-container self-signing model (Phase 2A of Sigstore RFC)
+operatorSigning:
+  enabled: false
+  spiffeEndpointSocket: "unix:///spiffe-workload-api/spire-agent.sock"
+
 # [SIGNATURE VERIFICATION]: A2A agent card signature verification via SPIRE x5c
 signatureVerification:
   # Enable signature verification for agent cards

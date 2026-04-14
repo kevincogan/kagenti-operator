@@ -34,6 +34,10 @@ spec:
             {{- if .Values.mlflow.enable }}
             - "--enable-mlflow=true"
             {{- end }}
+            {{- if .Values.operatorSigning.enabled }}
+            - "--enable-operator-signing=true"
+            - "--spiffe-endpoint-socket={{ .Values.operatorSigning.spiffeEndpointSocket }}"
+            {{- end }}
             {{- if .Values.signatureVerification.enabled }}
             - "--require-a2a-signature=true"
             {{- if .Values.signatureVerification.auditMode }}
@@ -105,6 +109,11 @@ spec:
               mountPath: /tmp/k8s-metrics-server/metrics-certs
               readOnly: true
             {{- end }}
+            {{- if .Values.operatorSigning.enabled }}
+            - name: spiffe-workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+            {{- end }}
       securityContext:
         {{- toYaml .Values.controllerManager.securityContext | nindent 8 }}
       serviceAccountName: {{ .Values.controllerManager.serviceAccountName }}
@@ -127,4 +136,10 @@ spec:
         - name: metrics-certs
           secret:
             secretName: kagenti-operator-metrics-server-cert
+        {{- end }}
+        {{- if .Values.operatorSigning.enabled }}
+        - name: spiffe-workload-api
+          csi:
+            driver: "csi.spiffe.io"
+            readOnly: true
         {{- end }}

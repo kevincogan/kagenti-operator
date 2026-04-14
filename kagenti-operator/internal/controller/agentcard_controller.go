@@ -126,6 +126,16 @@ type AgentCardReconciler struct {
 	// SVIDExpiryGracePeriod controls how far before the leaf cert expires the operator
 	// triggers a proactive workload restart. Defaults to DefaultSVIDExpiryGracePeriod.
 	SVIDExpiryGracePeriod time.Duration
+
+	// CardSigner signs agent cards with the operator's SPIFFE identity.
+	// Nil when operator signing is disabled.
+	CardSigner signature.Signer
+
+	// EnableOperatorSign gates the operator signing code path.
+	EnableOperatorSign bool
+
+	// CardWriter writes signed cards to ConfigMaps. Nil when operator signing is disabled.
+	CardWriter *agentcard.Writer
 }
 
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agentcards,verbs=get;list;watch;create;update;patch;delete
@@ -134,7 +144,7 @@ type AgentCardReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch
 
 func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	agentCardLogger.V(1).Info("Reconciling AgentCard", "namespacedName", req.NamespacedName)
@@ -227,6 +237,39 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, condErr
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
+	}
+
+	if r.EnableOperatorSign && r.CardSigner != nil {
+		if !r.CardSigner.Ready() {
+			agentCardLogger.Info("Operator signer not ready, requeueing", "workload", workload.Name)
+			if condErr := r.updateCondition(ctx, agentCard, "Synced", metav1.ConditionFalse, "SignerNotReady",
+				"Operator SPIFFE signer has not yet obtained an SVID"); condErr != nil {
+				return ctrl.Result{}, condErr
+			}
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+
+		signedBytes, signErr := r.CardSigner.SignCard(ctx, cardData)
+		if signErr != nil {
+			agentCardLogger.Error(signErr, "Operator signing failed", "workload", workload.Name)
+			if condErr := r.updateCondition(ctx, agentCard, "Synced", metav1.ConditionFalse, "SigningFailed", signErr.Error()); condErr != nil {
+				return ctrl.Result{}, condErr
+			}
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+
+		if r.CardWriter != nil {
+			if writeErr := r.CardWriter.WriteSignedCard(ctx, agentCard, workload.ServiceName, agentCard.Namespace, signedBytes); writeErr != nil {
+				agentCardLogger.Error(writeErr, "Failed to write signed card ConfigMap (non-fatal)", "workload", workload.Name)
+				if r.Recorder != nil {
+					r.Recorder.Event(agentCard, corev1.EventTypeWarning, "ConfigMapWriteFailed", writeErr.Error())
+				}
+			}
+		}
+
+		agentCardLogger.Info("Operator signed agent card",
+			"workload", workload.Name,
+			"spiffeID", r.CardSigner.SpiffeID())
 	}
 
 	var verificationResult *signature.VerificationResult
@@ -1108,9 +1151,14 @@ func (r *AgentCardReconciler) computeCardId(cardData *agentv1alpha1.AgentCardDat
 //  1. The leaf SVID cert is approaching expiry (within SVIDExpiryGracePeriod).
 //  2. The trust bundle hash changed since the workload was last (re)started.
 //
-// Both feed into the same mechanism: patch the pod template annotation to trigger a rollout.
-// The init-container re-runs, fetches a fresh SVID, and re-signs the card.
+// When operator signing is enabled, the operator re-signs on each reconcile using its
+// auto-rotating X509Source, so pod restarts for re-signing are unnecessary.
+// In legacy init-container mode, the pod template annotation is patched to trigger
+// a rollout so the init-container re-runs and fetches a fresh SVID.
 func (r *AgentCardReconciler) maybeRestartForResign(ctx context.Context, agentCard *agentv1alpha1.AgentCard, workload *WorkloadInfo, vr *signature.VerificationResult) {
+	if r.EnableOperatorSign {
+		return
+	}
 	if workload == nil || r.SignatureProvider == nil {
 		return
 	}

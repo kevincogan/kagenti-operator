@@ -88,6 +88,9 @@ func main() {
 	var enableOperatorClientRegistration bool
 	var enableMLflow bool
 
+	var enableOperatorSigning bool
+	var spiffeEndpointSocket string
+
 	var spireTrustDomain string
 	var spireTrustBundleConfigMapName string
 	var spireTrustBundleConfigMapNS string
@@ -128,6 +131,11 @@ func main() {
 			"kagenti.io/client-registration-inject=true (legacy sidecar)")
 	flag.BoolVar(&enableMLflow, "enable-mlflow", false,
 		"Enable MLflow experiment tracking integration")
+
+	flag.BoolVar(&enableOperatorSigning, "enable-operator-signing", false,
+		"Operator signs agent cards with its own SPIFFE identity instead of the init-container")
+	flag.StringVar(&spiffeEndpointSocket, "spiffe-endpoint-socket", "unix:///spiffe-workload-api/spire-agent.sock",
+		"SPIFFE Workload API socket path for operator signing")
 
 	flag.StringVar(&spireTrustDomain, "spire-trust-domain", "",
 		"SPIRE trust domain for identity binding (e.g. 'example.org')")
@@ -307,12 +315,14 @@ func main() {
 	var sigProvider signature.Provider
 	if requireA2ASignature {
 		if spireTrustDomain == "" {
-			setupLog.Error(errors.New("missing required flag"), "--spire-trust-domain is required when --require-a2a-signature=true")
+			setupLog.Error(errors.New("missing required flag"),
+				"--spire-trust-domain is required when --require-a2a-signature=true")
 			os.Exit(1)
 		}
 		if spireTrustBundleConfigMapName == "" || spireTrustBundleConfigMapNS == "" {
 			setupLog.Error(errors.New("missing required flags"),
-				"--spire-trust-bundle-configmap and --spire-trust-bundle-configmap-namespace are required when --require-a2a-signature=true")
+				"--spire-trust-bundle-configmap and --spire-trust-bundle-configmap-namespace "+
+					"are required when --require-a2a-signature=true")
 			os.Exit(1)
 		}
 
@@ -337,7 +347,7 @@ func main() {
 			"auditMode", signatureAuditMode)
 	}
 
-	if err = (&controller.AgentCardReconciler{
+	agentCardReconciler := &controller.AgentCardReconciler{
 		Client:                mgr.GetClient(),
 		Scheme:                mgr.GetScheme(),
 		Recorder:              mgr.GetEventRecorderFor("agentcard-controller"),
@@ -347,7 +357,23 @@ func main() {
 		SignatureAuditMode:    signatureAuditMode,
 		SpireTrustDomain:      spireTrustDomain,
 		SVIDExpiryGracePeriod: svidExpiryGracePeriod,
-	}).SetupWithManager(mgr); err != nil {
+		EnableOperatorSign:    enableOperatorSigning,
+	}
+
+	if enableOperatorSigning {
+		cardSigner, signerErr := signature.NewSpiffeSigner(ctx, spiffeEndpointSocket)
+		if signerErr != nil {
+			setupLog.Error(signerErr, "unable to create SPIFFE signer for operator signing")
+			os.Exit(1)
+		}
+		defer cardSigner.Close() //nolint:errcheck // best-effort cleanup on shutdown
+		agentCardReconciler.CardSigner = cardSigner
+		agentCardReconciler.CardWriter = agentcard.NewWriter(mgr.GetClient(), mgr.GetAPIReader(), mgr.GetScheme())
+		setupLog.Info("Operator AgentCard signing enabled",
+			"spiffeEndpointSocket", spiffeEndpointSocket)
+	}
+
+	if err = agentCardReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentCard")
 		os.Exit(1)
 	}

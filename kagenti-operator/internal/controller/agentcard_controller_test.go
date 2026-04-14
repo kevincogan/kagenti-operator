@@ -36,6 +36,44 @@ import (
 	"github.com/kagenti/operator/internal/agentcard"
 )
 
+// mockSigner implements signature.Signer for testing operator signing path.
+type mockSigner struct {
+	mu        sync.Mutex
+	signErr   error
+	signedOut []byte
+	ready     bool
+	spiffeID  string
+	signCount int
+}
+
+func (m *mockSigner) SignCard(_ context.Context, cardData *agentv1alpha1.AgentCardData) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.signCount++
+	if m.signErr != nil {
+		return nil, m.signErr
+	}
+	if m.signedOut != nil {
+		return m.signedOut, nil
+	}
+	out, _ := json.Marshal(cardData)
+	return out, nil
+}
+
+func (m *mockSigner) SpiffeID() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.spiffeID
+}
+
+func (m *mockSigner) Ready() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ready
+}
+
+func (m *mockSigner) Close() error { return nil }
+
 // mockFetcher implements agentcard.Fetcher for testing
 type mockFetcher struct {
 	cardData *agentv1alpha1.AgentCardData
@@ -1722,6 +1760,193 @@ var _ = Describe("AgentCard Controller - getSyncPeriod", func() {
 			Expect(result.RequeueAfter).To(Equal(10 * time.Second))
 		})
 	})
+})
+
+var _ = Describe("AgentCard Operator Signing", func() {
+	const (
+		opsDeployName = "opsign-agent"
+		opsCardName   = "opsign-card"
+		opsSvcName    = "opsign-agent"
+		namespace     = "default"
+	)
+
+	ctx := context.Background()
+	nn := types.NamespacedName{Name: opsCardName, Namespace: namespace}
+
+	BeforeEach(func() {
+		By("creating a Deployment with agent labels")
+		replicas := int32(1)
+		dep := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      opsDeployName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					LabelAgentType:              LabelValueAgent,
+					ProtocolLabelPrefix + "a2a": "",
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: &replicas,
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": opsDeployName}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
+						"app":                       opsDeployName,
+						LabelAgentType:              LabelValueAgent,
+						ProtocolLabelPrefix + "a2a": "",
+					}},
+					Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "agent", Image: "img:latest"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+
+		By("setting Deployment status to Available")
+		Eventually(func() error {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: opsDeployName, Namespace: namespace}, dep); err != nil {
+				return err
+			}
+			dep.Status.Conditions = []appsv1.DeploymentCondition{
+				{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
+			}
+			return k8sClient.Status().Update(ctx, dep)
+		}).Should(Succeed())
+
+		By("creating a Service for the Deployment")
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: opsSvcName, Namespace: namespace},
+			Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 8000}}},
+		}
+		Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+
+		By("creating an AgentCard with targetRef")
+		card := &agentv1alpha1.AgentCard{
+			ObjectMeta: metav1.ObjectMeta{Name: opsCardName, Namespace: namespace},
+			Spec: agentv1alpha1.AgentCardSpec{
+				SyncPeriod: "30s",
+				TargetRef:  &agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: opsDeployName},
+			},
+		}
+		Expect(k8sClient.Create(ctx, card)).To(Succeed())
+	})
+
+	AfterEach(func() {
+		By("cleaning up resources")
+		ac := &agentv1alpha1.AgentCard{}
+		if err := k8sClient.Get(ctx, nn, ac); err == nil {
+			ac.Finalizers = nil
+			_ = k8sClient.Update(ctx, ac)
+			_ = k8sClient.Delete(ctx, ac)
+		}
+		dep := &appsv1.Deployment{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: opsDeployName, Namespace: namespace}, dep); err == nil {
+			Expect(k8sClient.Delete(ctx, dep)).To(Succeed())
+		}
+		svc := &corev1.Service{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: opsSvcName, Namespace: namespace}, svc); err == nil {
+			Expect(k8sClient.Delete(ctx, svc)).To(Succeed())
+		}
+	})
+
+	It("should skip signing when operator signing disabled", func() {
+		signer := &mockSigner{ready: true, spiffeID: "spiffe://example.org/operator"}
+
+		reconciler := &AgentCardReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			AgentFetcher:       &mockFetcher{cardData: &agentv1alpha1.AgentCardData{Name: "A", Version: "1", URL: "http://x"}},
+			EnableOperatorSign: false,
+			CardSigner:         signer,
+		}
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		signer.mu.Lock()
+		count := signer.signCount
+		signer.mu.Unlock()
+		Expect(count).To(Equal(0), "signer should not be called when operator signing disabled")
+	})
+
+	It("should sign card when operator signing enabled", func() {
+		signer := &mockSigner{
+			ready:    true,
+			spiffeID: "spiffe://example.org/kagenti-operator",
+		}
+
+		reconciler := &AgentCardReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			AgentFetcher:       &mockFetcher{cardData: &agentv1alpha1.AgentCardData{Name: "OpSign", Version: "1", URL: "http://x"}},
+			EnableOperatorSign: true,
+			CardSigner:         signer,
+		}
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		signer.mu.Lock()
+		count := signer.signCount
+		signer.mu.Unlock()
+		Expect(count).To(Equal(1), "signer should be called once")
+	})
+
+	It("should requeue when signer not ready", func() {
+		signer := &mockSigner{
+			ready:    false,
+			spiffeID: "",
+		}
+
+		reconciler := &AgentCardReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			AgentFetcher:       &mockFetcher{cardData: &agentv1alpha1.AgentCardData{Name: "A", Version: "1", URL: "http://x"}},
+			EnableOperatorSign: true,
+			CardSigner:         signer,
+		}
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+
+		card := &agentv1alpha1.AgentCard{}
+		Expect(k8sClient.Get(ctx, nn, card)).To(Succeed())
+		syncCond := findCondition(card.Status.Conditions, "Synced")
+		Expect(syncCond).NotTo(BeNil())
+		Expect(syncCond.Reason).To(Equal("SignerNotReady"))
+	})
+
+	It("should handle signing failure gracefully", func() {
+		signer := &mockSigner{
+			ready:    true,
+			signErr:  errors.New("SVID expired"),
+			spiffeID: "spiffe://example.org/operator",
+		}
+
+		reconciler := &AgentCardReconciler{
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
+			AgentFetcher:       &mockFetcher{cardData: &agentv1alpha1.AgentCardData{Name: "A", Version: "1", URL: "http://x"}},
+			EnableOperatorSign: true,
+			CardSigner:         signer,
+		}
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+
+		card := &agentv1alpha1.AgentCard{}
+		Expect(k8sClient.Get(ctx, nn, card)).To(Succeed())
+		syncCond := findCondition(card.Status.Conditions, "Synced")
+		Expect(syncCond).NotTo(BeNil())
+		Expect(syncCond.Reason).To(Equal("SigningFailed"))
+	})
+
 })
 
 // Helper function to find a condition by type
