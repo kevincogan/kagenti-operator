@@ -52,6 +52,13 @@ var (
 
 	// signerImage is the agentcard-signer init-container image
 	signerImage = "ghcr.io/kagenti/kagenti-operator/agentcard-signer:e2e-test"
+
+	// sidecarImages are the AuthBridge sidecar images to pull and load into Kind
+	sidecarImages = []string{
+		"ghcr.io/kagenti/kagenti-extensions/envoy-with-processor:latest",
+		"ghcr.io/kagenti/kagenti-extensions/proxy-init:latest",
+		"ghcr.io/kagenti/kagenti-extensions/spiffe-helper:latest",
+	}
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -113,6 +120,10 @@ var _ = BeforeSuite(func() {
 	By("loading the agentcard-signer image on Kind")
 	err = utils.LoadImageToKindClusterWithName(signerImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the agentcard-signer image into Kind")
+
+	By("pulling and loading AuthBridge sidecar images into Kind")
+	Expect(utils.PullAndLoadSidecarImages(sidecarImages)).To(Succeed(),
+		"Failed to pull and load AuthBridge sidecar images")
 
 	if !skipSpireInstall {
 		By("checking if SPIRE is installed already")

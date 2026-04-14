@@ -214,6 +214,23 @@ func LoadImageToKindClusterWithName(name string) error {
 	return archiveErr
 }
 
+// PullAndLoadSidecarImages pulls each image via the detected container tool
+// and loads it into the Kind cluster.
+func PullAndLoadSidecarImages(images []string) error {
+	containerTool := DetectContainerTool()
+	for _, img := range images {
+		_, _ = fmt.Fprintf(GinkgoWriter, "pulling image %s with %s\n", img, containerTool)
+		cmd := exec.Command(containerTool, "pull", img)
+		if _, err := Run(cmd); err != nil {
+			return fmt.Errorf("failed to pull image %s: %w", img, err)
+		}
+		if err := LoadImageToKindClusterWithName(img); err != nil {
+			return fmt.Errorf("failed to load image %s into Kind: %w", img, err)
+		}
+	}
+	return nil
+}
+
 // GetNonEmptyLines converts given command output string into individual objects
 // according to line breakers, and ignores the empty elements in it.
 func GetNonEmptyLines(output string) []string {
@@ -341,10 +358,12 @@ func KubectlApplyStdin(yaml, namespace string) (string, error) {
 
 // KubectlGetJsonpath gets a value using jsonpath from a resource.
 func KubectlGetJsonpath(resource, name, namespace, jsonpath string) (string, error) {
-	cmd := exec.Command("kubectl", "get", resource, name,
-		"-n", namespace,
-		"-o", fmt.Sprintf("jsonpath=%s", jsonpath),
-	)
+	args := []string{"get", resource}
+	if name != "" {
+		args = append(args, name)
+	}
+	args = append(args, "-n", namespace, "-o", fmt.Sprintf("jsonpath=%s", jsonpath))
+	cmd := exec.Command("kubectl", args...)
 	output, err := Run(cmd)
 	return strings.TrimSpace(output), err
 }
@@ -473,10 +492,69 @@ func DeployController(namespace, img string) error {
 		return err
 	}
 
+	By("ensuring cert-manager webhook is responsive before deploy")
+	if err := EnsureCertManagerWebhookReady(2 * time.Minute); err != nil {
+		return fmt.Errorf("cert-manager webhook not ready: %w", err)
+	}
+
 	By("deploying the controller-manager")
 	cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", img))
 	_, err := Run(cmd)
 	return err
+}
+
+// EnsureCertManagerWebhookReady waits for the cert-manager webhook to be responsive.
+// This is needed when re-deploying after an undeploy, because the webhook's TLS
+// serving certificate can become stale.
+func EnsureCertManagerWebhookReady(timeout time.Duration) error {
+	By("ensuring cert-manager webhook is responsive")
+
+	// Quick check — if the webhook is already working, return immediately
+	if certManagerWebhookProbe() {
+		return nil
+	}
+
+	// Re-apply the cert-manager manifest (idempotent) and wait for webhook
+	By("re-applying cert-manager to refresh webhook TLS")
+	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
+	cmd := exec.Command("kubectl", "apply", "-f", url)
+	if _, err := Run(cmd); err != nil {
+		return fmt.Errorf("failed to re-apply cert-manager: %w", err)
+	}
+	cmd = exec.Command("kubectl", "wait", "deployment.apps/cert-manager-webhook",
+		"--for", "condition=Available",
+		"--namespace", "cert-manager",
+		"--timeout", fmt.Sprintf("%ds", int(timeout.Seconds())))
+	if _, err := Run(cmd); err != nil {
+		return fmt.Errorf("cert-manager-webhook not available: %w", err)
+	}
+
+	// Poll until the webhook actually validates requests (fresh deadline after the wait above)
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if certManagerWebhookProbe() {
+			return nil
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf(
+		"cert-manager webhook did not become ready within 60s "+
+			"(after waiting up to %v for deployment)", timeout)
+}
+
+// certManagerWebhookProbe returns true if the cert-manager webhook is serving valid TLS.
+func certManagerWebhookProbe() bool {
+	cmd := exec.Command("kubectl", "apply", "--dry-run=server", "-f", "-")
+	cmd.Stdin = strings.NewReader(`apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: e2e-probe
+  namespace: default
+spec:
+  selfSigned: {}
+`)
+	_, err := Run(cmd)
+	return err == nil
 }
 
 // UndeployController undeploys the controller-manager and uninstalls CRDs.

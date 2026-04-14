@@ -1,8 +1,9 @@
 # E2E Tests
 
-End-to-end tests for the kagenti-operator. The suite runs 16 specs:
+End-to-end tests for the kagenti-operator. The suite runs 20 specs:
 
 - **Manager tests** (2 specs) — controller pod readiness and Prometheus metrics
+- **AuthBridge Injection tests** (4 specs) — sidecar injection, idempotency, opt-out, and HTTP validation
 - **AgentCard tests** (6 specs) — webhook validation, auto-discovery, duplicate prevention, audit mode, and SPIRE signature verification
 - **AgentRuntime tests** (8 specs) — label application, status lifecycle, idempotency, error handling, tool type, StatefulSet support, identity/trace overrides, and deletion cleanup
 
@@ -13,7 +14,7 @@ End-to-end tests for the kagenti-operator. The suite runs 16 specs:
 - [kubectl](https://kubernetes.io/docs/tasks/tools/) — `brew install kubectl`
 - Container runtime: **Docker** or **Podman**
 
-The test suite auto-detects Docker vs Podman. No env vars needed.
+The test suite auto-detects Docker vs Podman. No env vars needed. AuthBridge sidecar images (`envoy-with-processor`, `proxy-init`, `spiffe-helper`) are pulled from `ghcr.io/kagenti/kagenti-extensions` and loaded into Kind during setup.
 
 ## Run
 
@@ -21,7 +22,7 @@ The test suite auto-detects Docker vs Podman. No env vars needed.
 # Create a fresh Kind cluster
 kind delete cluster 2>/dev/null; kind create cluster
 
-# Run all 16 specs (~12 min)
+# Run all 20 specs (~15 min)
 make test-e2e
 ```
 
@@ -41,6 +42,9 @@ make test-e2e
 ## Run specific scenarios
 
 ```bash
+# AuthBridge injection tests only (~3 min)
+go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="AuthBridge"
+
 # Webhook + auto-discovery tests only (~4 min)
 go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="should reject AgentCard|should not create|should auto-create|should reject duplicate"
 
@@ -64,6 +68,10 @@ kind delete cluster
 
 | Scenario | Context | What it tests |
 |----------|---------|---------------|
+| Inject sidecars | AuthBridge injection | Webhook injects `envoy-proxy`, `spiffe-helper` containers, `proxy-init` init container, and expected volumes |
+| Idempotency | AuthBridge injection | Pod recreation produces exactly 1 of each sidecar (no duplicates) |
+| Injection opt-out | AuthBridge injection | Pod with `kagenti.io/inject=disabled` label gets zero sidecars |
+| HTTP validation | AuthBridge injection | Traffic flows through injected envoy proxy (curl → service → iptables → envoy → app) |
 | Reject missing targetRef | Without signature | Webhook rejects AgentCard with no `spec.targetRef` |
 | No protocol label | Without signature | Workload with `kagenti.io/type=agent` but no `protocol.kagenti.io/*` label gets no auto-created card |
 | Auto-discovery | Without signature | Properly labeled workload gets an auto-created AgentCard with correct targetRef, protocol, and Synced=True |
@@ -91,13 +99,16 @@ BeforeSuite (once per suite)
 ├── Install Prometheus Operator v0.77.1 (metrics/ServiceMonitor CRDs)
 ├── Install CertManager v1.16.3 (webhook TLS certificates)
 ├── Build & load agentcard-signer image into Kind
+├── Pull & load AuthBridge sidecar images (envoy-with-processor, proxy-init, spiffe-helper)
 └── Install SPIRE via Helm (spire-crds v0.5.0 + spire v0.28.3)
 
 BeforeAll (per Describe block)
-├── make install → applies AgentCard CRD via kustomize
+├── make install → applies AgentCard + AgentRuntime CRDs via kustomize
 ├── make deploy → creates namespace, RBAC, Deployment, webhook, ServiceMonitor
 ├── Wait for controller pod Running + webhook endpoint ready
-└── Create test namespace e2e-agentcard-test (labeled agentcard=true + PSA restricted)
+└── Create test namespace:
+    ├── e2e-authbridge-test (kagenti-enabled=true, PSA privileged — for proxy-init NET_ADMIN)
+    └── e2e-agentcard-test (agentcard=true, PSA restricted)
 ```
 
 ### How the operator is installed
@@ -135,21 +146,25 @@ kind load docker-image           ▼                   kubectl apply --server-si
                             ▼
 ┌─ kagenti-operator-system ────────────────────────────────────────┐
 │  Controller Manager Pod                                           │
-│  ├── Webhook server (validates AgentCard create/update)           │
+│  ├── Mutating webhook (injects AuthBridge sidecars into pods)     │
+│  ├── Validating webhook (validates AgentCard/AgentRuntime CRs)    │
 │  ├── Metrics server (HTTPS, scraped by Prometheus)                │
 │  ├── AgentCardSync controller                                     │
 │  │   watches Deployments → auto-creates AgentCards                │
 │  └── AgentCard controller                                         │
 │      fetches card metadata, verifies signatures, evaluates binding│
-└───────────────────────────┬──────────────────────────────────────┘
-                            │ fetches /.well-known/agent-card.json
-                            ▼
-┌─ e2e-agentcard-test ─────────────────────────────────────────────┐
-│  Agent Deployments (echo-agent, audit-agent, signed-agent)        │
-│  Services (expose agents for card fetching)                       │
-│  AgentCard CRs (auto-created or manually applied)                 │
-└───────────────────────────▲──────────────────────────────────────┘
-                            │ SPIRE CSI volume provides SVIDs
+└──────────┬────────────────────────────────┬──────────────────────┘
+           │ injects sidecars               │ fetches agent-card.json
+           ▼                                ▼
+┌─ e2e-authbridge-test ────────────┐ ┌─ e2e-agentcard-test ────────┐
+│  authbridge-agent Deployment      │ │  Agent Deployments           │
+│  ├── echo container (app:8080)    │ │  (echo, audit, signed)       │
+│  ├── envoy-proxy (injected)       │ │  Services + AgentCard CRs    │
+│  ├── spiffe-helper (injected)     │ └──────────▲─────────────────┘
+│  └── proxy-init (injected init)   │            │ SPIRE CSI volumes
+│  disabled-agent (no injection)    │            │
+│  ConfigMaps + AgentRuntime CR     │            │
+└──────────────────────────────────┘            │
 ┌─ spire-system ───────────┴──────────────────────────────────────┐
 │  SPIRE Server → issues SVIDs via ClusterSPIFFEID policies         │
 │  SPIRE Agent (DaemonSet) → distributes SVIDs via CSI driver       │
@@ -202,6 +217,36 @@ AgentRuntime adds `kagenti.io/type=agent`, AgentCardSync auto-creates an AgentCa
 to sync (pause container serves no HTTP). This is expected and harmless.
 
 ### Test scenario details
+
+#### Inject sidecars
+
+Deploys `authbridge-agent` with `kagenti.io/type=agent` label and a matching AgentRuntime CR.
+The mutating webhook (`inject.kagenti.io`) intercepts the pod CREATE, calls `InjectAuthBridge`,
+and adds: `envoy-proxy` sidecar (envoy with passthrough config), `spiffe-helper` sidecar
+(manages SVID rotation), and `proxy-init` init container (sets up iptables rules for traffic
+interception as root with NET_ADMIN/NET_RAW). The test verifies container names, init container
+names, and injected volumes (`shared-data`, `spire-agent-socket`, `spiffe-helper-config`,
+`svid-output`, `envoy-config`, `authproxy-routes`).
+
+#### Idempotency
+
+Deletes the running `authbridge-agent` pod and waits for the Deployment to recreate it.
+Verifies the new pod has exactly 1 `envoy-proxy`, 1 `spiffe-helper`, and 1 `proxy-init` —
+no duplicate injection occurs on pod recreation.
+
+#### Injection opt-out
+
+Deploys `disabled-agent` with `kagenti.io/inject=disabled` label on the pod template.
+The webhook's `objectSelector` (matching `kagenti.io/inject NOT IN [disabled]`) filters
+this pod at the API server level, so the webhook handler is never called. The test verifies
+zero sidecar containers and zero init containers.
+
+#### HTTP validation
+
+Waits for `envoy-proxy` to be ready, then:
+1. Execs into the echo container and curls envoy admin at `127.0.0.1:9901/server_info` (asserts 200)
+2. Runs a curl pod targeting the `authbridge-agent` Service on port 8080
+3. Asserts HTTP 200, proving traffic flows: curl → Service → iptables → envoy:15124 → app:8080
 
 #### Reject missing targetRef
 

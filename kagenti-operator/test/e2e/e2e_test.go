@@ -318,6 +318,305 @@ type tokenRequest struct {
 	} `json:"status"`
 }
 
+var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
+	const controllerNamespace = "kagenti-operator-system"
+
+	BeforeAll(func() {
+		Expect(utils.DeployController(controllerNamespace, projectImage)).To(Succeed(), "Failed to deploy controller")
+
+		By("waiting for controller-manager to be ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", controllerNamespace,
+				"-o", "go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}{{ .status.phase }}{{ end }}{{ end }}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(ContainSubstring("Running"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("waiting for webhook endpoint to be ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "endpoints",
+				"kagenti-operator-webhook-service", "-n", controllerNamespace,
+				"-o", "jsonpath={.subsets[0].addresses[0].ip}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).NotTo(BeEmpty(), "webhook endpoint not yet populated")
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("creating auth bridge test namespace")
+		cmd := exec.Command("kubectl", "create", "ns", authBridgeTestNamespace)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", authBridgeTestNamespace,
+			"kagenti-enabled=true",
+			"pod-security.kubernetes.io/enforce=privileged",
+			"pod-security.kubernetes.io/warn=baseline")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("creating ClusterSPIFFEID for auth bridge test namespace")
+		_, err = utils.KubectlApplyStdin(authBridgeClusterSPIFFEIDFixture(), "")
+		Expect(err).NotTo(HaveOccurred())
+
+		By("applying auth bridge ConfigMaps")
+		_, err = utils.KubectlApplyStdin(authBridgeConfigMapFixture(), authBridgeTestNamespace)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("creating AgentRuntime CR for authbridge-agent (with retry for webhook readiness)")
+		Eventually(func() error {
+			_, err := utils.KubectlApplyStdin(authBridgeAgentRuntimeFixture(), authBridgeTestNamespace)
+			return err
+		}, 1*time.Minute, 5*time.Second).Should(Succeed())
+	})
+
+	AfterAll(func() {
+		By("deleting auth bridge test namespace")
+		cmd := exec.Command("kubectl", "delete", "ns", authBridgeTestNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("cleaning up ClusterSPIFFEID")
+		cmd = exec.Command("kubectl", "delete", "clusterspiffeid", "e2e-authbridge-test", "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		utils.UndeployController()
+	})
+
+	AfterEach(func() {
+		if CurrentSpecReport().Failed() {
+			cmd := exec.Command("kubectl", "logs", "-l", "control-plane=controller-manager",
+				"-n", controllerNamespace, "--tail=100")
+			logs, err := utils.Run(cmd)
+			if err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n%s\n", logs)
+			}
+
+			cmd = exec.Command("kubectl", "get", "events", "-n", authBridgeTestNamespace, "--sort-by=.lastTimestamp")
+			events, err := utils.Run(cmd)
+			if err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Events:\n%s\n", events)
+			}
+
+			cmd = exec.Command("kubectl", "describe", "pods", "-n", authBridgeTestNamespace)
+			desc, err := utils.Run(cmd)
+			if err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Pod descriptions:\n%s\n", desc)
+			}
+		}
+	})
+
+	SetDefaultEventuallyTimeout(2 * time.Minute)
+	SetDefaultEventuallyPollingInterval(time.Second)
+
+	Context("Sidecar injection", Ordered, func() {
+		It("should inject envoy-proxy, proxy-init, and spiffe-helper", func() {
+			By("deploying authbridge-agent")
+			_, err := utils.KubectlApplyStdin(authBridgeAgentFixture(), authBridgeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			Expect(utils.WaitForDeploymentReady("authbridge-agent", authBridgeTestNamespace, 3*time.Minute)).To(Succeed())
+
+			By("verifying injected sidecar containers")
+			Eventually(func(g Gomega) {
+				containers, err := utils.KubectlGetJsonpath("pod", "",
+					authBridgeTestNamespace,
+					"{.items[?(@.metadata.labels.app\\.kubernetes\\.io/name=='authbridge-agent')].spec.containers[*].name}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(containers).To(ContainSubstring("envoy-proxy"))
+				g.Expect(containers).To(ContainSubstring("spiffe-helper"))
+				g.Expect(containers).NotTo(ContainSubstring("kagenti-client-registration"))
+			}).Should(Succeed())
+
+			By("verifying injected init containers")
+			Eventually(func(g Gomega) {
+				initContainers, err := utils.KubectlGetJsonpath("pod", "",
+					authBridgeTestNamespace,
+					"{.items[?(@.metadata.labels.app\\.kubernetes\\.io/name=='authbridge-agent')].spec.initContainers[*].name}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(initContainers).To(ContainSubstring("proxy-init"))
+			}).Should(Succeed())
+
+			By("verifying injected volumes")
+			Eventually(func(g Gomega) {
+				volumes, err := utils.KubectlGetJsonpath("pod", "",
+					authBridgeTestNamespace,
+					"{.items[?(@.metadata.labels.app\\.kubernetes\\.io/name=='authbridge-agent')].spec.volumes[*].name}")
+				g.Expect(err).NotTo(HaveOccurred())
+				expectedVolumes := []string{
+					"shared-data", "spire-agent-socket", "spiffe-helper-config",
+					"svid-output", "envoy-config", "authproxy-routes",
+				}
+				for _, vol := range expectedVolumes {
+					g.Expect(volumes).To(ContainSubstring(vol), "expected volume %s", vol)
+				}
+			}).Should(Succeed())
+		})
+
+		It("should not duplicate sidecars on pod recreation (idempotency)", func() {
+			By("getting current pod name")
+			var oldPodName string
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "app.kubernetes.io/name=authbridge-agent",
+					"-n", authBridgeTestNamespace,
+					"-o", "jsonpath={.items[0].metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty())
+				oldPodName = output
+			}).Should(Succeed())
+
+			By("deleting the pod")
+			cmd := exec.Command("kubectl", "delete", "pod", oldPodName, "-n", authBridgeTestNamespace)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for new pod to be running with a different name")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "app.kubernetes.io/name=authbridge-agent",
+					"-n", authBridgeTestNamespace,
+					"-o", "jsonpath={.items[0].metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty())
+				g.Expect(output).NotTo(Equal(oldPodName), "new pod should have a different name")
+
+				phase, err := utils.KubectlGetJsonpath("pod", output, authBridgeTestNamespace, "{.status.phase}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(phase).To(Equal("Running"))
+			}, 3*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("verifying exactly 1 envoy-proxy, 1 spiffe-helper, 1 proxy-init")
+			cmd = exec.Command("kubectl", "get", "pods",
+				"-l", "app.kubernetes.io/name=authbridge-agent",
+				"-n", authBridgeTestNamespace,
+				"-o", "jsonpath={.items[0].spec.containers[*].name}")
+			containers, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.Count(containers, "envoy-proxy")).To(Equal(1), "expected exactly 1 envoy-proxy")
+			Expect(strings.Count(containers, "spiffe-helper")).To(Equal(1), "expected exactly 1 spiffe-helper")
+
+			cmd = exec.Command("kubectl", "get", "pods",
+				"-l", "app.kubernetes.io/name=authbridge-agent",
+				"-n", authBridgeTestNamespace,
+				"-o", "jsonpath={.items[0].spec.initContainers[*].name}")
+			initContainers, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.Count(initContainers, "proxy-init")).To(Equal(1), "expected exactly 1 proxy-init")
+		})
+	})
+
+	Context("Injection opt-out", func() {
+		It("should not inject when kagenti.io/inject=disabled", func() {
+			By("creating AgentRuntime for disabled agent")
+			_, err := utils.KubectlApplyStdin(authBridgeDisabledAgentRuntimeFixture(), authBridgeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying AgentRuntime CR exists")
+			_, err = utils.KubectlGetJsonpath("agentruntime", "authbridge-disabled-agent",
+				authBridgeTestNamespace, "{.metadata.name}")
+			Expect(err).NotTo(HaveOccurred(), "AgentRuntime CR must exist before deploying disabled agent")
+
+			By("deploying disabled agent")
+			_, err = utils.KubectlApplyStdin(authBridgeDisabledAgentFixture(), authBridgeTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			Expect(utils.WaitForDeploymentReady(
+				"authbridge-disabled-agent", authBridgeTestNamespace, 2*time.Minute,
+			)).To(Succeed())
+
+			By("verifying only pause container, no sidecars")
+			cmd := exec.Command("kubectl", "get", "pods",
+				"-l", "app.kubernetes.io/name=authbridge-disabled-agent",
+				"-n", authBridgeTestNamespace,
+				"-o", "jsonpath={.items[0].spec.containers[*].name}")
+			containers, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(containers).To(Equal("pause"), "expected only pause container")
+
+			By("verifying no init containers")
+			cmd = exec.Command("kubectl", "get", "pods",
+				"-l", "app.kubernetes.io/name=authbridge-disabled-agent",
+				"-n", authBridgeTestNamespace,
+				"-o", "jsonpath={.items[0].spec.initContainers[*].name}")
+			initContainers, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(initContainers)).To(BeEmpty(), "expected no init containers")
+		})
+	})
+
+	Context("HTTP validation", func() {
+		It("should route HTTP traffic through the injected envoy proxy", func() {
+			By("waiting for envoy-proxy container to be ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "app.kubernetes.io/name=authbridge-agent",
+					"-n", authBridgeTestNamespace,
+					"-o", "jsonpath={.items[0].status.containerStatuses[?(@.name=='envoy-proxy')].ready}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("true"), "envoy-proxy container not ready")
+			}, 3*time.Minute, 2*time.Second).Should(Succeed())
+
+			// Verify envoy admin is responding. The request originates from the echo
+			// container (non-proxy UID) so proxy-init iptables redirect it through
+			// envoy's outbound listener, which forwards to the original destination
+			// 127.0.0.1:9901 (envoy admin). The response is genuinely from envoy admin.
+			By("hitting envoy admin interface from the echo container")
+			var podName string
+			cmd := exec.Command("kubectl", "get", "pods",
+				"-l", "app.kubernetes.io/name=authbridge-agent",
+				"-n", authBridgeTestNamespace,
+				"-o", "jsonpath={.items[0].metadata.name}")
+			podName, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			podName = strings.TrimSpace(podName)
+
+			cmd = exec.Command("kubectl", "exec", podName,
+				"-n", authBridgeTestNamespace,
+				"-c", "echo",
+				"--", "python3", "-c",
+				"import urllib.request; r = urllib.request.urlopen('http://127.0.0.1:9901/server_info'); print(r.status)")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("200"), "envoy admin should return 200")
+
+			By("running a curl pod to hit authbridge-agent service")
+			curlPodName := "curl-authbridge-test"
+			cmd = exec.Command("kubectl", "run", curlPodName,
+				"--restart=Never",
+				"--namespace", authBridgeTestNamespace,
+				"--image=curlimages/curl:latest",
+				"--command", "--",
+				"curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+				fmt.Sprintf("http://authbridge-agent.%s.svc:8080/", authBridgeTestNamespace))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for curl pod to complete")
+			Eventually(func(g Gomega) {
+				phase, err := utils.KubectlGetJsonpath("pod", curlPodName, authBridgeTestNamespace, "{.status.phase}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(phase).To(Equal("Succeeded"))
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("verifying HTTP 200 response")
+			cmd = exec.Command("kubectl", "logs", curlPodName, "-n", authBridgeTestNamespace)
+			curlOutput, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(curlOutput)).To(Equal("200"), "expected HTTP 200 through envoy proxy")
+
+			By("cleaning up curl pod")
+			cmd = exec.Command("kubectl", "delete", "pod", curlPodName, "-n", authBridgeTestNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+	})
+})
+
 var _ = Describe("AgentCard E2E", Ordered, func() {
 	const controllerNamespace = "kagenti-operator-system"
 	const controllerDeployment = "kagenti-operator-controller-manager"
