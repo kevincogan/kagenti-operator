@@ -23,9 +23,9 @@ import (
 func TestBuildResolvedVolumes_SpireDisabled(t *testing.T) {
 	volumes := BuildResolvedVolumes(false, "")
 
-	// Should have: shared-data, envoy-config, authproxy-routes
-	if len(volumes) != 3 {
-		t.Fatalf("expected 3 volumes, got %d", len(volumes))
+	// Should have: shared-data, envoy-config, authproxy-routes, authbridge-unified-config
+	if len(volumes) != 4 {
+		t.Fatalf("expected 4 volumes, got %d", len(volumes))
 	}
 
 	names := map[string]bool{}
@@ -33,7 +33,7 @@ func TestBuildResolvedVolumes_SpireDisabled(t *testing.T) {
 		names[v.Name] = true
 	}
 
-	for _, expected := range []string{"shared-data", "envoy-config", "authproxy-routes"} {
+	for _, expected := range []string{"shared-data", "envoy-config", "authproxy-routes", "authbridge-unified-config"} {
 		if !names[expected] {
 			t.Errorf("missing volume %q", expected)
 		}
@@ -50,9 +50,9 @@ func TestBuildResolvedVolumes_SpireDisabled(t *testing.T) {
 func TestBuildResolvedVolumes_SpireEnabled(t *testing.T) {
 	volumes := BuildResolvedVolumes(true, "")
 
-	// Should have: shared-data, spire-agent-socket, spiffe-helper-config, svid-output, envoy-config, authproxy-routes
-	if len(volumes) != 6 {
-		t.Fatalf("expected 6 volumes, got %d", len(volumes))
+	// Should have: shared-data, spire-agent-socket, spiffe-helper-config, svid-output, envoy-config, authproxy-routes, authbridge-unified-config
+	if len(volumes) != 7 {
+		t.Fatalf("expected 7 volumes, got %d", len(volumes))
 	}
 
 	names := map[string]bool{}
@@ -60,7 +60,7 @@ func TestBuildResolvedVolumes_SpireEnabled(t *testing.T) {
 		names[v.Name] = true
 	}
 
-	for _, expected := range []string{"shared-data", "spire-agent-socket", "spiffe-helper-config", "svid-output", "envoy-config", "authproxy-routes"} {
+	for _, expected := range []string{"shared-data", "spire-agent-socket", "spiffe-helper-config", "svid-output", "envoy-config", "authproxy-routes", "authbridge-unified-config"} {
 		if !names[expected] {
 			t.Errorf("missing volume %q", expected)
 		}

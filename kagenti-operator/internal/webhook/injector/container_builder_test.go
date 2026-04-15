@@ -77,9 +77,10 @@ func TestBuildEnvoyProxyContainer_HasAllRequiredMounts(t *testing.T) {
 	container := builder.BuildEnvoyProxyContainerWithSpireOption(true)
 
 	requiredMounts := map[string]string{
-		"envoy-config": "/etc/envoy",
-		"shared-data":  "/shared",
-		"svid-output":  "/opt",
+		"envoy-config":              "/etc/envoy",
+		"shared-data":               "/shared",
+		"svid-output":               "/opt",
+		"authbridge-unified-config": "/etc/authbridge",
 	}
 
 	mountsByName := make(map[string]string)

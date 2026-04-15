@@ -55,7 +55,7 @@ var (
 
 	// sidecarImages are the AuthBridge sidecar images to pull and load into Kind
 	sidecarImages = []string{
-		"ghcr.io/kagenti/kagenti-extensions/envoy-with-processor:latest",
+		"ghcr.io/kagenti/kagenti-extensions/authbridge-unified:latest",
 		"ghcr.io/kagenti/kagenti-extensions/proxy-init:latest",
 		"ghcr.io/kagenti/kagenti-extensions/spiffe-helper:latest",
 	}

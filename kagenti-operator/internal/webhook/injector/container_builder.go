@@ -381,6 +381,11 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainerWithSpireOption(spireEnabled 
 			MountPath: "/etc/authproxy",
 			ReadOnly:  true,
 		},
+		{
+			Name:      "authbridge-unified-config",
+			MountPath: "/etc/authbridge",
+			ReadOnly:  true,
+		},
 	}
 	if spireEnabled {
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
@@ -401,6 +406,7 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainerWithSpireOption(spireEnabled 
 		Name:            EnvoyProxyContainerName,
 		Image:           b.cfg.Images.EnvoyProxy,
 		ImagePullPolicy: b.cfg.Images.PullPolicy,
+		Args:            []string{"--config", "/etc/authbridge/config.yaml"},
 		Resources:       b.cfg.Resources.EnvoyProxy,
 		Ports: []corev1.ContainerPort{
 			{

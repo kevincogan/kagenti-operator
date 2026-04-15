@@ -80,6 +80,17 @@ func BuildRequiredVolumes() []corev1.Volume {
 				},
 			},
 		},
+		{
+			Name: "authbridge-unified-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: "authbridge-unified-config",
+					},
+					Optional: ptr.To(true),
+				},
+			},
+		},
 	}
 }
 
@@ -109,6 +120,17 @@ func BuildRequiredVolumesNoSpire() []corev1.Volume {
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: "authproxy-routes",
+					},
+					Optional: ptr.To(true),
+				},
+			},
+		},
+		{
+			Name: "authbridge-unified-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: "authbridge-unified-config",
 					},
 					Optional: ptr.To(true),
 				},
@@ -183,6 +205,17 @@ func BuildResolvedVolumes(spireEnabled bool, envoyConfigMapName string) []corev1
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: AuthproxyRoutesConfigMapName,
+					},
+					Optional: ptr.To(true),
+				},
+			},
+		},
+		corev1.Volume{
+			Name: "authbridge-unified-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: "authbridge-unified-config",
 					},
 					Optional: ptr.To(true),
 				},

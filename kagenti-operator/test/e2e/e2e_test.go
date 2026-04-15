@@ -447,6 +447,7 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 				expectedVolumes := []string{
 					"shared-data", "spire-agent-socket", "spiffe-helper-config",
 					"svid-output", "envoy-config", "authproxy-routes",
+					"authbridge-unified-config",
 				}
 				for _, vol := range expectedVolumes {
 					g.Expect(volumes).To(ContainSubstring(vol), "expected volume %s", vol)

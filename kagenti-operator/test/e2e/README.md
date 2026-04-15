@@ -14,7 +14,7 @@ End-to-end tests for the kagenti-operator. The suite runs 20 specs:
 - [kubectl](https://kubernetes.io/docs/tasks/tools/) — `brew install kubectl`
 - Container runtime: **Docker** or **Podman**
 
-The test suite auto-detects Docker vs Podman. No env vars needed. AuthBridge sidecar images (`envoy-with-processor`, `proxy-init`, `spiffe-helper`) are pulled from `ghcr.io/kagenti/kagenti-extensions` and loaded into Kind during setup.
+The test suite auto-detects Docker vs Podman. No env vars needed. AuthBridge sidecar images (`authbridge-unified`, `proxy-init`, `spiffe-helper`) are pulled from `ghcr.io/kagenti/kagenti-extensions` and loaded into Kind during setup.
 
 ## Run
 
@@ -99,7 +99,7 @@ BeforeSuite (once per suite)
 ├── Install Prometheus Operator v0.77.1 (metrics/ServiceMonitor CRDs)
 ├── Install CertManager v1.16.3 (webhook TLS certificates)
 ├── Build & load agentcard-signer image into Kind
-├── Pull & load AuthBridge sidecar images (envoy-with-processor, proxy-init, spiffe-helper)
+├── Pull & load AuthBridge sidecar images (authbridge-unified, proxy-init, spiffe-helper)
 └── Install SPIRE via Helm (spire-crds v0.5.0 + spire v0.28.3)
 
 BeforeAll (per Describe block)

@@ -897,6 +897,30 @@ data:
                         socket_address:
                           address: 127.0.0.1
                           port_value: 8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authbridge-unified-config
+  namespace: ` + authBridgeTestNamespace + `
+data:
+  config.yaml: |
+    mode: envoy-sidecar
+    inbound:
+      issuer: "https://keycloak.example.com/realms/test"
+    outbound:
+      token_url: "https://keycloak.example.com/realms/test/protocol/openid-connect/token"
+      default_policy: "passthrough"
+    identity:
+      type: client-secret
+      client_id_file: "/shared/client-id.txt"
+      client_secret_file: "/shared/client-secret.txt"
+    bypass:
+      inbound_paths:
+        - "/.well-known/*"
+        - "/healthz"
+        - "/readyz"
+        - "/livez"
 `
 }
 
