@@ -310,14 +310,50 @@ When `spec.identityBinding` is configured on an AgentCard:
 
 ### RBAC
 
-The operator implements least-privilege access control:
+The operator implements least-privilege access control. All permissions are declared as `+kubebuilder:rbac` markers on the controller source files and compiled into the `manager-role` ClusterRole at `config/rbac/role.yaml`.
 
-#### Operator Permissions
-- Read/Write: AgentCard CRs, AgentRuntime CRs
-- Read/Update/Patch: Deployments, StatefulSets (for label/annotation application)
-- Read: Services, Pods
-- Read: ConfigMaps (cluster defaults + namespace defaults)
-- Create/Patch: Events
+#### AgentRuntime Controller Permissions
+
+Source: `internal/controller/agentruntime_controller.go`
+
+| API Group | Resources | Verbs | Purpose |
+|-----------|-----------|-------|---------|
+| `agent.kagenti.dev` | `agentruntimes` | get, list, watch, create, update, patch, delete | Full lifecycle management of the primary resource |
+| `agent.kagenti.dev` | `agentruntimes/status` | get, update, patch | Set phase (Pending/Active/Error), conditions, and configuredPods count |
+| `agent.kagenti.dev` | `agentruntimes/finalizers` | update | Add/remove `kagenti.io/cleanup` finalizer for graceful deletion |
+| `apps` | `deployments`, `statefulsets` | get, list, watch, update, patch | Resolve targetRef, apply labels (`kagenti.io/type`, `managed-by`) and config-hash annotation |
+| `""` (core) | `configmaps` | get, list, watch | Read cluster defaults (`kagenti-platform-config`), feature gates (`kagenti-feature-gates`), and namespace defaults |
+| `""` (core) | `pods` | get, list, watch | Count configured pods and verify ownership chains |
+| `""` (core) | `events` | create, patch | Record reconciliation events (TargetNotFound, ConfigWarning, Configured) |
+
+#### AgentCard Controller Permissions
+
+Source: `internal/controller/agentcard_controller.go`
+
+| API Group | Resources | Verbs | Purpose |
+|-----------|-----------|-------|---------|
+| `agent.kagenti.dev` | `agentcards` | get, list, watch, create, update, patch, delete | Full lifecycle management |
+| `agent.kagenti.dev` | `agentcards/status` | get, update, patch | Store cached card data, sync conditions, signature results |
+| `agent.kagenti.dev` | `agentcards/finalizers` | update | Finalizer management |
+| `apps` | `deployments`, `statefulsets` | get, list, watch, update, patch | Resolve targetRef and propagate signature labels |
+| `""` (core) | `services` | get, list, watch | Construct service URLs for agent card fetching |
+| `""` (core) | `configmaps` | get, list, watch | Read SPIRE trust bundle for signature verification |
+
+#### AgentCard NetworkPolicy Controller Permissions
+
+Source: `internal/controller/agentcard_networkpolicy_controller.go`
+
+| API Group | Resources | Verbs | Purpose |
+|-----------|-----------|-------|---------|
+| `networking.k8s.io` | `networkpolicies` | get, list, watch, create, update, patch, delete | Create permissive/restrictive NetworkPolicies based on signature verification |
+| `""` (core) | `pods` | get, list, watch, update, patch | Resolve pod selectors from workload pod template labels |
+
+#### Cross-Namespace Considerations
+
+- The operator uses a **ClusterRole** and **ClusterRoleBinding** in cluster-wide mode, allowing it to reconcile resources across all namespaces
+- In **namespaced mode** (`NAMESPACES2WATCH` env var), the same permissions are scoped to specific namespaces via **Role** and **RoleBinding**
+- The AgentRuntime controller reads ConfigMaps from `kagenti-system` (cluster defaults) regardless of mode — this requires cross-namespace read access
+- Namespace defaults ConfigMaps are read from the workload's own namespace
 
 ### Secret Management
 
@@ -434,6 +470,7 @@ The operator exposes metrics via Prometheus:
 ## Additional Resources
 
 - [API Reference](./api-reference.md) — CRD specifications
+- [Controller-Webhook Interaction](./controller-webhook-interaction.md) — AgentRuntime controller and AuthBridge webhook coordination
 - [Dynamic Agent Discovery](./dynamic-agent-discovery.md) — AgentCard discovery system
 - [Signature Verification](./agentcard-signature-verification.md) — JWS signature setup guide
 - [Identity Binding](./agentcard-identity-binding.md) — SPIFFE identity binding guide

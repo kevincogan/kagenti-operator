@@ -40,15 +40,150 @@ This scenario demonstrates the complete lifecycle of an AI agent deployment on t
 ## Overview
 
 ### Kagenti Operator
-The Kagenti Operator discovers, indexes, and secures AI agents deployed in Kubernetes. Agents are deployed as standard Kubernetes **Deployments** or **StatefulSets** with the `kagenti.io/type: agent` label. The operator automatically creates **AgentCard** resources for discovered workloads to enable Kubernetes-native agent discovery.
+The Kagenti Operator discovers, indexes, and secures AI agents deployed in Kubernetes. There are two ways to enroll workloads:
 
-> **Note:** The `Agent` Custom Resource is deprecated and will be removed in a future release. Use standard Kubernetes Deployments or StatefulSets with the `kagenti.io/type: agent` label instead.
+1. **AgentRuntime CR (Recommended)** — Create a clean Deployment and an `AgentRuntime` CR pointing to it. The controller applies labels and triggers sidecar injection automatically. Your workload manifests stay free of kagenti-specific labels.
+2. **Manual labels** — Add the `kagenti.io/type: agent` label directly to your Deployment or StatefulSet. This is simpler for quick tests but does not provide identity or observability configuration.
+
+> **Note:** The `Agent` Custom Resource is deprecated and will be removed in a future release.
 
 ---
 
-## Deploy an Agent
+## Deploy an Agent with AgentRuntime (Recommended)
 
-Deploy an agent as a standard Kubernetes Deployment with the required `kagenti.io/type: agent` label. The operator will automatically discover the workload and create an AgentCard for it.
+The AgentRuntime approach keeps your workload manifests clean — no kagenti labels required. The controller applies labels, computes a config hash, and triggers the AuthBridge webhook to inject sidecars.
+
+### Step 1: Deploy a Clean Deployment
+
+```yaml
+kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weather-agent
+  namespace: team1
+  labels:
+    app.kubernetes.io/name: weather-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weather-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weather-agent
+    spec:
+      containers:
+      - name: agent
+        image: "ghcr.io/kagenti/agent-examples/weather_service:v0.0.1-alpha.3"
+        ports:
+        - containerPort: 8000
+        imagePullPolicy: Always
+        env:
+        - name: PORT
+          value: "8000"
+        - name: UV_CACHE_DIR
+          value: /app/.cache/uv
+        - name: MCP_URL
+          value: http://weather-tool-mcp.team1.svc.cluster.local:8000/mcp
+        - name: LLM_API_BASE
+          value: http://host.docker.internal:11434/v1
+        - name: LLM_API_KEY
+          value: dummy
+        - name: LLM_MODEL
+          value: llama3.2:3b-instruct-fp16
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: weather-agent
+  namespace: team1
+spec:
+  selector:
+    app.kubernetes.io/name: weather-agent
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+EOF
+```
+
+### Step 2: Create an AgentRuntime CR
+
+```yaml
+kubectl apply -f - <<EOF
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: weather-agent-runtime
+  namespace: team1
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: weather-agent
+EOF
+```
+
+The controller will:
+1. Resolve `targetRef` and verify the Deployment exists
+2. Apply `kagenti.io/type: agent` and `app.kubernetes.io/managed-by: kagenti-operator` labels
+3. Compute a config hash from cluster/namespace/CR configuration and set it as a `kagenti.io/config-hash` annotation on the PodTemplateSpec
+4. Trigger a rolling update — new Pods are created with the `kagenti.io/type` label, which the AuthBridge webhook matches to inject sidecars
+
+### Step 3: Check Status
+
+```bash
+# Check AgentRuntime status
+kubectl get agentruntime -n team1
+
+# Example output:
+# NAME                      TYPE    TARGET          PHASE    AGE
+# weather-agent-runtime     agent   weather-agent   Active   2m
+
+# View detailed conditions
+kubectl describe agentruntime weather-agent-runtime -n team1
+
+# Verify labels were applied to the Deployment
+kubectl get deployment weather-agent -n team1 --show-labels
+
+# Check that pods received sidecar injection
+kubectl get pods -n team1 -l kagenti.io/type=agent -o jsonpath='{.items[0].spec.containers[*].name}'
+```
+
+### Updating Configuration
+
+When you update the AgentRuntime CR (e.g., changing the trust domain or trace endpoint), the controller recomputes the config hash and triggers a rolling update automatically:
+
+```bash
+kubectl patch agentruntime weather-agent-runtime -n team1 --type merge -p '
+spec:
+  trace:
+    endpoint: otel-collector.observability.svc.cluster.local:4317
+    protocol: grpc
+    sampling:
+      rate: 0.5
+'
+```
+
+### Deleting an AgentRuntime
+
+When you delete the AgentRuntime CR, the controller performs a graceful cleanup:
+- Preserves the `kagenti.io/type` label (so AgentCard discovery continues)
+- Updates the config hash to defaults-only (triggers a rollback to default sidecar configuration)
+- Removes the `app.kubernetes.io/managed-by` label
+
+```bash
+kubectl delete agentruntime weather-agent-runtime -n team1
+```
+
+---
+
+## Deploy an Agent with Manual Labels (Alternative)
+
+Deploy an agent as a standard Kubernetes Deployment with the required `kagenti.io/type: agent` label. The operator will automatically discover the workload and create an AgentCard for it. This approach does not provide AgentRuntime's identity or observability configuration.
 
 ### Quick Example Deployment
 
@@ -431,6 +566,7 @@ kubectl run curl-test --image=curlimages/curl:8.1.2 --rm -i --tty -n team1 -- \
 
 ## Next Steps
 
+- [Controller-Webhook Interaction](docs/controller-webhook-interaction.md) — How the AgentRuntime controller and AuthBridge webhook coordinate
 - [Dynamic Agent Discovery](docs/dynamic-agent-discovery.md) — How AgentCard enables agent discovery
 - [Signature Verification](docs/agentcard-signature-verification.md) — Set up JWS signature verification
 - [Identity Binding](docs/agentcard-identity-binding.md) — Configure SPIFFE identity binding

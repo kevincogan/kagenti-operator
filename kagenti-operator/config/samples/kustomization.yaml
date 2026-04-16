@@ -1,4 +1,6 @@
 ## Append samples of your project ##
 resources:
-- weather-agent-image-deployment.yaml
+- agent_v1alpha1_agentruntime_basic.yaml
+- agent_v1alpha1_agentruntime_full.yaml
+- agent_v1alpha1_agentruntime_tool.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
