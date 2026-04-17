@@ -48,8 +48,11 @@ type IdentityBinding struct {
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$`
 	TrustDomain string `json:"trustDomain,omitempty"`
 
-	// Strict enables enforcement mode: binding failures trigger network isolation.
-	// When false (default), results are recorded in status only (audit mode).
+	// Strict controls whether binding failures trigger enforcement actions
+	// (label removal, restrictive NetworkPolicy).
+	// When true, binding failure removes the verified label and applies restrictive NetworkPolicy.
+	// When false (default), binding results are recorded in status only;
+	// the workload retains its verified label and permissive policy.
 	// +optional
 	// +kubebuilder:default=false
 	Strict bool `json:"strict,omitempty"`

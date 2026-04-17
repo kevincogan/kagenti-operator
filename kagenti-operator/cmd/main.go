@@ -347,11 +347,16 @@ func main() {
 			"auditMode", signatureAuditMode)
 	}
 
+	agentFetcher := agentcard.NewConfigMapFetcher(mgr.GetAPIReader())
+	if enableOperatorSigning {
+		agentFetcher = agentcard.NewFetcher()
+	}
+
 	agentCardReconciler := &controller.AgentCardReconciler{
 		Client:                mgr.GetClient(),
 		Scheme:                mgr.GetScheme(),
 		Recorder:              mgr.GetEventRecorderFor("agentcard-controller"),
-		AgentFetcher:          agentcard.NewConfigMapFetcher(mgr.GetAPIReader()),
+		AgentFetcher:          agentFetcher,
 		SignatureProvider:     sigProvider,
 		RequireSignature:      requireA2ASignature,
 		SignatureAuditMode:    signatureAuditMode,

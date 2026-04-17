@@ -348,11 +348,12 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	// Both signature and binding (if configured) must pass for the label.
+	// Signature must pass for the label. Binding must also pass when strict: true;
+	// when strict: false (default), binding failures are recorded in status only.
 	if r.RequireSignature {
 		isVerified := sigVerified
 		if agentCard.Spec.IdentityBinding != nil {
-			isVerified = isVerified && bindingPassed
+			isVerified = isVerified && (bindingPassed || !agentCard.Spec.IdentityBinding.Strict)
 		}
 		if err := r.propagateSignatureLabel(ctx, agentCard.Name, workload, isVerified); err != nil {
 			agentCardLogger.Error(err, "Failed to propagate signature label to workload",
@@ -1151,9 +1152,9 @@ func (r *AgentCardReconciler) computeCardId(cardData *agentv1alpha1.AgentCardDat
 //  1. The leaf SVID cert is approaching expiry (within SVIDExpiryGracePeriod).
 //  2. The trust bundle hash changed since the workload was last (re)started.
 //
-// When operator signing is enabled, the operator re-signs on each reconcile using its
-// auto-rotating X509Source, so pod restarts for re-signing are unnecessary.
-// In legacy init-container mode, the pod template annotation is patched to trigger
+// When operator signing is enabled (EnableOperatorSign), the operator re-signs on each
+// reconcile using its auto-rotating X509Source, so pod restarts for re-signing are
+// unnecessary. In init-container mode, the pod template annotation is patched to trigger
 // a rollout so the init-container re-runs and fetches a fresh SVID.
 func (r *AgentCardReconciler) maybeRestartForResign(ctx context.Context, agentCard *agentv1alpha1.AgentCard, workload *WorkloadInfo, vr *signature.VerificationResult) {
 	if r.EnableOperatorSign {
