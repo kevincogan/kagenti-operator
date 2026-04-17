@@ -223,7 +223,20 @@ var _ = Describe("AgentCardNetworkPolicyReconciler", func() {
 			Expect(policyHasVerifiedPodIngress(p)).To(BeTrue())
 		})
 
-		It("should create restrictive policy when SignatureIdentityMatch=false", func() {
+		It("should create restrictive policy when SignatureIdentityMatch=false and strict=true", func() {
+			strictBinding := &agentv1alpha1.IdentityBinding{TrustDomain: "test.local", Strict: true}
+			createDeploymentWithService(ctx, deploymentName, namespace)
+			createCardWithStatus(agentCardName, namespace, deploymentName, nil, ptr.To(false), strictBinding)
+
+			r := newNPReconciler(true)
+			reconcileNP(r, agentCardName, namespace)
+			reconcileNP(r, agentCardName, namespace)
+
+			p := getPolicy(deploymentName, namespace)
+			Expect(p.Spec.Ingress[0].From[0].PodSelector).To(BeNil())
+		})
+
+		It("should create permissive policy when SignatureIdentityMatch=false and strict=false", func() {
 			createDeploymentWithService(ctx, deploymentName, namespace)
 			createCardWithStatus(agentCardName, namespace, deploymentName, nil, ptr.To(false), binding)
 
@@ -232,7 +245,8 @@ var _ = Describe("AgentCardNetworkPolicyReconciler", func() {
 			reconcileNP(r, agentCardName, namespace)
 
 			p := getPolicy(deploymentName, namespace)
-			Expect(p.Spec.Ingress[0].From[0].PodSelector).To(BeNil())
+			Expect(p.Spec.Ingress[0].From).To(HaveLen(3))
+			Expect(policyHasVerifiedPodIngress(p)).To(BeTrue())
 		})
 	})
 

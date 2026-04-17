@@ -49,7 +49,7 @@ type AgentCardNetworkPolicyReconciler struct {
 	EnforceNetworkPolicies bool
 	// KubeAPIServerCIDRs are the /32 CIDRs of the K8s API server endpoints.
 	// Populated at startup from the "kubernetes" Endpoints in the default namespace.
-	// Used to allow init-container egress to the API server in restrictive policies.
+	// Used to allow workload egress to the API server in restrictive policies.
 	KubeAPIServerCIDRs []string
 }
 
@@ -143,6 +143,9 @@ func (r *AgentCardNetworkPolicyReconciler) manageNetworkPolicy(ctx context.Conte
 	isVerified := false
 	if agentCard.Spec.IdentityBinding != nil {
 		isVerified = agentCard.Status.SignatureIdentityMatch != nil && *agentCard.Status.SignatureIdentityMatch
+		if !isVerified && !agentCard.Spec.IdentityBinding.Strict {
+			isVerified = true
+		}
 	} else {
 		isVerified = agentCard.Status.ValidSignature != nil && *agentCard.Status.ValidSignature
 	}
@@ -242,10 +245,10 @@ func (r *AgentCardNetworkPolicyReconciler) createRestrictivePolicy(
 }
 
 // kubeAPIEgressRules returns egress rules that allow only traffic to the
-// K8s API server endpoints on port 6443. This permits init containers
-// (e.g. agentcard-signer) to write ConfigMaps while blocking all other
-// outbound traffic. If no API server CIDRs are configured, returns an
-// empty list (deny-all egress).
+// K8s API server endpoints on port 6443. This permits workloads to
+// communicate with the API server while blocking all other outbound
+// traffic. If no API server CIDRs are configured, returns an empty
+// list (deny-all egress).
 func (r *AgentCardNetworkPolicyReconciler) kubeAPIEgressRules() []netv1.NetworkPolicyEgressRule {
 	if len(r.KubeAPIServerCIDRs) == 0 {
 		return []netv1.NetworkPolicyEgressRule{}
