@@ -27,6 +27,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -54,6 +55,12 @@ const (
 	ConditionTypeConfigResolved = "ConfigResolved"
 )
 
+var sandboxGVK = schema.GroupVersionKind{
+	Group:   "agents.x-k8s.io",
+	Version: "v1alpha1",
+	Kind:    "Sandbox",
+}
+
 // AgentRuntimeReconciler reconciles AgentRuntime objects.
 type AgentRuntimeReconciler struct {
 	client.Client
@@ -67,6 +74,8 @@ type AgentRuntimeReconciler struct {
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agentruntimes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes/scale,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
@@ -221,7 +230,9 @@ func (r *AgentRuntimeReconciler) applyWorkloadConfig(ctx context.Context, rt *ag
 
 	key := types.NamespacedName{Name: ref.Name, Namespace: rt.Namespace}
 
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	var configHashChanged bool
+
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := r.Get(ctx, key, acc.obj); err != nil {
 			return err
 		}
@@ -239,6 +250,10 @@ func (r *AgentRuntimeReconciler) applyWorkloadConfig(ctx context.Context, rt *ag
 		if alreadyConfigured {
 			return nil
 		}
+
+		// Track whether config-hash actually changed (for Sandbox rollout)
+		previousHash := currentPodAnnotations[AnnotationConfigHash]
+		configHashChanged = previousHash != "" && previousHash != configHash
 
 		// Apply labels to workload metadata
 		workloadLabels := acc.obj.GetLabels()
@@ -273,6 +288,47 @@ func (r *AgentRuntimeReconciler) applyWorkloadConfig(ctx context.Context, rt *ag
 
 		return r.Update(ctx, acc.obj)
 	})
+	if err != nil {
+		return err
+	}
+
+	// Sandbox pods don't restart on podTemplate changes (upstream limitation).
+	// Trigger a restart by scaling replicas 0 → 1 when config actually changed.
+	if ref.Kind == "Sandbox" && configHashChanged {
+		if err := r.restartSandbox(ctx, key); err != nil {
+			return fmt.Errorf("sandbox restart failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// restartSandbox performs a scale 0→1 cycle to restart a Sandbox pod.
+// Sandbox pods don't roll out on podTemplate changes, so this is the
+// workaround for applying config changes that require a pod restart.
+func (r *AgentRuntimeReconciler) restartSandbox(ctx context.Context, key types.NamespacedName) error {
+	logger := log.FromContext(ctx)
+	logger.Info("Restarting Sandbox via scale 0→1", "sandbox", key.Name)
+
+	patchScale := func(replicas int64) error {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(sandboxGVK)
+		if err := r.Get(ctx, key, obj); err != nil {
+			return err
+		}
+		if err := unstructured.SetNestedField(obj.Object, replicas, "spec", "replicas"); err != nil {
+			return err
+		}
+		return r.Update(ctx, obj)
+	}
+
+	if err := patchScale(0); err != nil {
+		return fmt.Errorf("scale to 0: %w", err)
+	}
+	if err := patchScale(1); err != nil {
+		return fmt.Errorf("scale to 1: %w", err)
+	}
+	return nil
 }
 
 // countConfiguredPods counts pods that have the kagenti.io/type label matching the runtime type.
@@ -297,7 +353,8 @@ func (r *AgentRuntimeReconciler) countConfiguredPods(ctx context.Context, rt *ag
 
 // isPodOwnedByWorkload checks if a pod is transitively owned by the named workload.
 // For Deployments: Pod → ReplicaSet (<deployment>-<pod-template-hash>) → Deployment.
-// We match the deployment name as the prefix before the last "-".
+// For StatefulSets: Pod is directly owned by the StatefulSet.
+// For Sandboxes: Pod is directly owned by the Sandbox CR.
 func isPodOwnedByWorkload(pod *corev1.Pod, workloadName string) bool {
 	for _, ref := range pod.OwnerReferences {
 		if ref.Kind == "ReplicaSet" {
@@ -308,6 +365,9 @@ func isPodOwnedByWorkload(pod *corev1.Pod, workloadName string) bool {
 			}
 		}
 		if ref.Kind == "StatefulSet" && ref.Name == workloadName {
+			return true
+		}
+		if ref.Kind == "Sandbox" && ref.Name == workloadName {
 			return true
 		}
 	}
@@ -557,6 +617,9 @@ func (r *AgentRuntimeReconciler) mapConfigMapToAgentRuntimes(ctx context.Context
 
 // SetupWithManager registers the AgentRuntime controller with the manager.
 func (r *AgentRuntimeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	sandboxObj := &unstructured.Unstructured{}
+	sandboxObj.SetGroupVersionKind(sandboxGVK)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentv1alpha1.AgentRuntime{}).
 		Watches(
@@ -566,6 +629,10 @@ func (r *AgentRuntimeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(r.mapWorkloadToAgentRuntime("apps/v1", "StatefulSet")),
+		).
+		Watches(
+			sandboxObj,
+			handler.EnqueueRequestsFromMapFunc(r.mapWorkloadToAgentRuntime("agents.x-k8s.io/v1alpha1", "Sandbox")),
 		).
 		Watches(
 			&corev1.ConfigMap{},
@@ -617,6 +684,30 @@ func newRuntimePodTemplateAccessor(kind string) (*runtimePodTemplateAccessor, bo
 			},
 			setPodAnnotations: func(o client.Object, a map[string]string) {
 				o.(*appsv1.StatefulSet).Spec.Template.Annotations = a
+			},
+		}, true
+	case "Sandbox":
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(sandboxGVK)
+		return &runtimePodTemplateAccessor{
+			obj: u,
+			getPodLabels: func(o client.Object) map[string]string {
+				u := o.(*unstructured.Unstructured)
+				labels, _, _ := unstructured.NestedStringMap(u.Object, "spec", "podTemplate", "metadata", "labels")
+				return labels
+			},
+			setPodLabels: func(o client.Object, l map[string]string) {
+				u := o.(*unstructured.Unstructured)
+				_ = unstructured.SetNestedStringMap(u.Object, l, "spec", "podTemplate", "metadata", "labels")
+			},
+			getPodAnnotations: func(o client.Object) map[string]string {
+				u := o.(*unstructured.Unstructured)
+				annotations, _, _ := unstructured.NestedStringMap(u.Object, "spec", "podTemplate", "metadata", "annotations")
+				return annotations
+			},
+			setPodAnnotations: func(o client.Object, a map[string]string) {
+				u := o.(*unstructured.Unstructured)
+				_ = unstructured.SetNestedStringMap(u.Object, a, "spec", "podTemplate", "metadata", "annotations")
 			},
 		}, true
 	default:

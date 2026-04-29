@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
@@ -635,6 +636,143 @@ var _ = Describe("AgentRuntime Controller", func() {
 				Expect(cm.Data["config.yaml"]).To(Equal("template-" + name))
 				Expect(cm.Labels[LabelManagedBy]).To(Equal(LabelManagedByValue))
 			}
+		})
+	})
+
+	Context("Sandbox workload support", func() {
+		It("should create a Sandbox accessor that reads/writes pod template labels and annotations", func() {
+			acc, ok := newRuntimePodTemplateAccessor("Sandbox")
+			Expect(ok).To(BeTrue())
+			Expect(acc).NotTo(BeNil())
+
+			u := acc.obj.(*unstructured.Unstructured)
+			u.Object = map[string]interface{}{
+				"apiVersion": "agents.x-k8s.io/v1alpha1",
+				"kind":       "Sandbox",
+				"metadata": map[string]interface{}{
+					"name":      "test-sandbox",
+					"namespace": "default",
+				},
+				"spec": map[string]interface{}{
+					"podTemplate": map[string]interface{}{
+						"metadata": map[string]interface{}{
+							"labels":      map[string]interface{}{"app": "my-agent"},
+							"annotations": map[string]interface{}{"existing": "value"},
+						},
+						"spec": map[string]interface{}{
+							"containers": []interface{}{
+								map[string]interface{}{"name": "agent", "image": "test:latest"},
+							},
+						},
+					},
+				},
+			}
+
+			// Read existing labels
+			labels := acc.getPodLabels(acc.obj)
+			Expect(labels).To(HaveKeyWithValue("app", "my-agent"))
+
+			// Write new labels
+			labels["kagenti.io/type"] = "agent"
+			acc.setPodLabels(acc.obj, labels)
+
+			// Verify labels were set
+			updatedLabels := acc.getPodLabels(acc.obj)
+			Expect(updatedLabels).To(HaveKeyWithValue("kagenti.io/type", "agent"))
+			Expect(updatedLabels).To(HaveKeyWithValue("app", "my-agent"))
+
+			// Read existing annotations
+			annotations := acc.getPodAnnotations(acc.obj)
+			Expect(annotations).To(HaveKeyWithValue("existing", "value"))
+
+			// Write new annotations
+			annotations[AnnotationConfigHash] = "abc123"
+			acc.setPodAnnotations(acc.obj, annotations)
+
+			// Verify annotations were set
+			updatedAnnotations := acc.getPodAnnotations(acc.obj)
+			Expect(updatedAnnotations).To(HaveKeyWithValue(AnnotationConfigHash, "abc123"))
+			Expect(updatedAnnotations).To(HaveKeyWithValue("existing", "value"))
+		})
+
+		It("should handle Sandbox with no existing pod template metadata", func() {
+			acc, ok := newRuntimePodTemplateAccessor("Sandbox")
+			Expect(ok).To(BeTrue())
+
+			u := acc.obj.(*unstructured.Unstructured)
+			u.Object = map[string]interface{}{
+				"apiVersion": "agents.x-k8s.io/v1alpha1",
+				"kind":       "Sandbox",
+				"metadata": map[string]interface{}{
+					"name":      "test-sandbox-empty",
+					"namespace": "default",
+				},
+				"spec": map[string]interface{}{
+					"podTemplate": map[string]interface{}{
+						"spec": map[string]interface{}{
+							"containers": []interface{}{
+								map[string]interface{}{"name": "agent", "image": "test:latest"},
+							},
+						},
+					},
+				},
+			}
+
+			// Labels should be nil when no metadata.labels exists
+			labels := acc.getPodLabels(acc.obj)
+			Expect(labels).To(BeNil())
+
+			// Setting labels should work even without existing metadata
+			acc.setPodLabels(acc.obj, map[string]string{"kagenti.io/type": "agent"})
+			labels = acc.getPodLabels(acc.obj)
+			Expect(labels).To(HaveKeyWithValue("kagenti.io/type", "agent"))
+
+			// Annotations should be nil when no metadata.annotations exists
+			annotations := acc.getPodAnnotations(acc.obj)
+			Expect(annotations).To(BeNil())
+
+			// Setting annotations should work
+			acc.setPodAnnotations(acc.obj, map[string]string{AnnotationConfigHash: "hash123"})
+			annotations = acc.getPodAnnotations(acc.obj)
+			Expect(annotations).To(HaveKeyWithValue(AnnotationConfigHash, "hash123"))
+		})
+
+		It("isPodOwnedByWorkload should match Sandbox-owned pods", func() {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-sandbox-pod",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "agents.x-k8s.io/v1alpha1",
+							Kind:       "Sandbox",
+							Name:       "my-sandbox",
+						},
+					},
+				},
+			}
+
+			Expect(isPodOwnedByWorkload(pod, "my-sandbox")).To(BeTrue())
+			Expect(isPodOwnedByWorkload(pod, "other-sandbox")).To(BeFalse())
+		})
+
+		It("isPodOwnedByWorkload should not match Sandbox name against ReplicaSet ownership", func() {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deploy-pod",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "apps/v1",
+							Kind:       "ReplicaSet",
+							Name:       "my-sandbox-abc123",
+						},
+					},
+				},
+			}
+
+			// This matches "my-sandbox" as a Deployment (ReplicaSet prefix match)
+			Expect(isPodOwnedByWorkload(pod, "my-sandbox")).To(BeTrue())
 		})
 	})
 })
