@@ -311,20 +311,42 @@ func (r *AgentRuntimeReconciler) restartSandbox(ctx context.Context, key types.N
 	logger.Info("Restarting Sandbox via scale 0→1", "sandbox", key.Name)
 
 	patchScale := func(replicas int64) error {
-		obj := &unstructured.Unstructured{}
-		obj.SetGroupVersionKind(sandboxGVK)
-		if err := r.Get(ctx, key, obj); err != nil {
-			return err
-		}
-		if err := unstructured.SetNestedField(obj.Object, replicas, "spec", "replicas"); err != nil {
-			return err
-		}
-		return r.Update(ctx, obj)
+		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			obj := &unstructured.Unstructured{}
+			obj.SetGroupVersionKind(sandboxGVK)
+			if err := r.Get(ctx, key, obj); err != nil {
+				return err
+			}
+			if err := unstructured.SetNestedField(obj.Object, replicas, "spec", "replicas"); err != nil {
+				return err
+			}
+			return r.Update(ctx, obj)
+		})
 	}
 
 	if err := patchScale(0); err != nil {
 		return fmt.Errorf("scale to 0: %w", err)
 	}
+
+	// The Sandbox controller tracks the adopted pod via an annotation.
+	// Clear it so the controller creates a fresh pod on scale-up.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(sandboxGVK)
+		if err := r.Get(ctx, key, obj); err != nil {
+			return err
+		}
+		annotations := obj.GetAnnotations()
+		if annotations != nil {
+			delete(annotations, "agents.x-k8s.io/pod-name")
+			obj.SetAnnotations(annotations)
+			return r.Update(ctx, obj)
+		}
+		return nil
+	}); err != nil {
+		logger.Info("Failed to clear pod-name annotation, proceeding with scale-up", "error", err)
+	}
+
 	if err := patchScale(1); err != nil {
 		return fmt.Errorf("scale to 1: %w", err)
 	}
