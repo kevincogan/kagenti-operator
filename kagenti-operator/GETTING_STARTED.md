@@ -1,6 +1,6 @@
 # Getting Started with Kagenti Operator
 
-> **Note**: This guide assumes you have already installed the Kagenti platform using the [Kagenti installer](https://github.com/kagenti/kagenti/blob/main/deployments/ansible/README.md).
+> **Note**: This guide assumes you have already installed the Kagenti platform on your cluster. For OpenShift, use [`scripts/ocp/setup-kagenti.sh`](https://github.com/kagenti/kagenti/blob/main/scripts/ocp/setup-kagenti.sh) — the recommended installer for OCP deployments. For plain Kubernetes, install the operator directly via Helm (see the [Quick Start](../README.md#quick-start) in the root README).
 
 ## Prerequisites
 

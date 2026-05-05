@@ -82,12 +82,27 @@ The operator runs three controllers:
 
 ### Prerequisites
 
-- Kubernetes cluster (v1.28+)
+- Kubernetes cluster (v1.28+) or OpenShift (v4.19+)
 - kubectl configured to access your cluster
 
 ### Install the Operator
 
-Using Helm:
+**Option A — OpenShift (recommended for OCP)**
+
+Use [`scripts/ocp/setup-kagenti.sh`](https://github.com/kagenti/kagenti/blob/main/scripts/ocp/setup-kagenti.sh) from the [kagenti](https://github.com/kagenti/kagenti) repo. It handles RBAC, SCCs, and Helm installation in one step.
+
+By default the script installs the released operator version pinned as a chart dependency in the `kagenti` repo's `charts/kagenti/Chart.yaml`. For development with a local build of this operator, two flags let you override that:
+
+```bash
+# Use a local chart and/or a custom operator image instead of the released version
+./scripts/ocp/setup-kagenti.sh \
+  --operator-repo /path/to/kagenti-operator \
+  --operator-image quay.io/<your-org>/kagenti-operator:dev
+```
+
+`--operator-repo` accepts a local clone of this repository and substitutes its `charts/kagenti-operator` chart in place of the pinned dependency. `--operator-image` overrides the container image the chart pulls.
+
+**Option B — Plain Kubernetes (Helm)**
 
 ```bash
 # Install the operator using OCI chart
