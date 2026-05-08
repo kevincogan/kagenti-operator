@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -39,6 +40,7 @@ type clientScopeCreateRep struct {
 }
 
 type protocolMapperRep struct {
+	ID              string            `json:"id"`
 	Name            string            `json:"name"`
 	Protocol        string            `json:"protocol"`
 	ProtocolMapper  string            `json:"protocolMapper"`
@@ -202,8 +204,12 @@ func (a *Admin) ensureAudienceMapper(ctx context.Context, token, realm, scopeID,
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusConflict {
+	if resp.StatusCode == http.StatusCreated {
 		return nil
+	}
+	if resp.StatusCode == http.StatusConflict {
+		// Mapper already exists — check if its audience needs updating.
+		return a.updateAudienceMapperIfNeeded(ctx, token, realm, scopeID, scopeName, audience)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	// Mapper may already exist — treat other errors as non-fatal (Python logs and continues).
@@ -211,6 +217,76 @@ func (a *Admin) ensureAudienceMapper(ctx context.Context, token, realm, scopeID,
 		return fmt.Errorf("keycloak add audience mapper: status %d: %s", resp.StatusCode, truncate(body, 256))
 	}
 	return nil
+}
+
+// updateAudienceMapperIfNeeded fetches the existing mapper for the scope and updates
+// its included.custom.audience if it differs from the desired value.
+func (a *Admin) updateAudienceMapperIfNeeded(ctx context.Context, token, realm, scopeID, scopeName, audience string) error {
+	base := trimBaseURL(a.BaseURL)
+	endpoint := base + "/admin/realms/" + url.PathEscape(realm) + "/client-scopes/" + url.PathEscape(scopeID) + "/protocol-mappers/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := a.httpc().Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("keycloak list mappers: status %d: %s", resp.StatusCode, truncate(body, 256))
+	}
+
+	var mappers []protocolMapperRep
+	if err := json.Unmarshal(body, &mappers); err != nil {
+		return fmt.Errorf("keycloak list mappers decode: %w", err)
+	}
+
+	for i := range mappers {
+		if mappers[i].Name != scopeName || mappers[i].ProtocolMapper != "oidc-audience-mapper" {
+			continue
+		}
+		if mappers[i].Config == nil {
+			continue
+		}
+		if mappers[i].Config["included.custom.audience"] == audience {
+			return nil // already correct
+		}
+		// Update the mapper with the correct audience.
+		mappers[i].Config["included.custom.audience"] = audience
+		return a.putAudienceMapper(ctx, token, realm, scopeID, mappers[i])
+	}
+	slog.Debug("no matching audience mapper found for scope", "scope", scopeName, "scopeID", scopeID)
+	return nil
+}
+
+func (a *Admin) putAudienceMapper(ctx context.Context, token, realm, scopeID string, mapper protocolMapperRep) error {
+	payload, err := json.Marshal(mapper)
+	if err != nil {
+		return err
+	}
+	base := trimBaseURL(a.BaseURL)
+	endpoint := base + "/admin/realms/" + url.PathEscape(realm) + "/client-scopes/" + url.PathEscape(scopeID) + "/protocol-mappers/models/" + url.PathEscape(mapper.ID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.httpc().Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNoContent || (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("keycloak update audience mapper: status %d: %s", resp.StatusCode, truncate(body, 256))
 }
 
 func (a *Admin) putRealmDefaultDefaultClientScope(ctx context.Context, token, realm, scopeID string) error {

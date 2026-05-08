@@ -1098,6 +1098,16 @@ func TestEnsurePerAgentConfigMap_EmptyBaseYAML_FallbackFromNsConfig(t *testing.T
 	if got, want := jwtCfg["issuer"], "http://keycloak:8080/realms/kagenti"; got != want {
 		t.Errorf("jwt-validation.config.issuer = %v, want %v", got, want)
 	}
+	// keycloak_url + keycloak_realm are passed to jwt-validation so the
+	// plugin derives jwks_url from the internal URL. Required for
+	// split-horizon deployments where `issuer` (public) isn't reachable
+	// from inside the pod. See kagenti-extensions#383.
+	if got, want := jwtCfg["keycloak_url"], "http://keycloak:8080"; got != want {
+		t.Errorf("jwt-validation.config.keycloak_url = %v, want %v", got, want)
+	}
+	if got, want := jwtCfg["keycloak_realm"], "kagenti"; got != want {
+		t.Errorf("jwt-validation.config.keycloak_realm = %v, want %v", got, want)
+	}
 
 	tokCfg := pluginConfigAt(t, cfg, "outbound", "token-exchange")
 	if got, want := tokCfg["keycloak_url"], "http://keycloak:8080"; got != want {

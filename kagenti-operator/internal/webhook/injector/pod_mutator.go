@@ -570,9 +570,16 @@ func perAgentConfigMapName(crName string) string {
 //
 // The synthesized shape matches what plugins expect:
 //   - jwt-validation.config.issuer from NamespaceConfig.Issuer
-//     (rest of the plugin's config comes from its defaults —
+//     (for matching the JWT `iss` claim — the PUBLIC Keycloak URL in
+//     split-horizon deployments). keycloak_url + keycloak_realm are
+//     also passed through so the plugin can derive jwks_url from the
+//     INTERNAL URL — the sidecar actually GETs this URL from inside
+//     the cluster, and the public hostname typically won't resolve
+//     from inside the mesh. See kagenti-extensions#383 for why the
+//     jwt-validation plugin needs its own copy of these fields.
+//     Other plugin settings fall back to their own defaults —
 //     audience_file=/shared/client-id.txt, bypass_paths=standard
-//     probes, jwks_url derived from issuer).
+//     probes.
 //   - token-exchange.config with Keycloak URL/realm, default_policy,
 //     and identity block keyed off ClientAuthType. File paths fall
 //     through to plugin defaults so operators don't have to
@@ -585,6 +592,15 @@ func synthesizePipeline(nsConfig *NamespaceConfig) map[string]interface{} {
 	jwtCfg := map[string]interface{}{}
 	if nsConfig.Issuer != "" {
 		jwtCfg["issuer"] = nsConfig.Issuer
+	}
+	// Pass keycloak_url + keycloak_realm through to jwt-validation so
+	// it can derive jwks_url from the internal URL rather than the
+	// public issuer. Mirrors the pair already handed to token-exchange.
+	if nsConfig.KeycloakURL != "" {
+		jwtCfg["keycloak_url"] = nsConfig.KeycloakURL
+	}
+	if nsConfig.KeycloakRealm != "" {
+		jwtCfg["keycloak_realm"] = nsConfig.KeycloakRealm
 	}
 
 	tokenCfg := map[string]interface{}{}
