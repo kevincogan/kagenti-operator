@@ -19,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -80,6 +81,7 @@ func (r *ClientRegistrationReconciler) uncachedReader() client.Reader {
 
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
 
@@ -97,7 +99,8 @@ func (r *ClientRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	dep := &appsv1.Deployment{}
-	if err := r.Get(ctx, req.NamespacedName, dep); err == nil {
+	err = r.Get(ctx, req.NamespacedName, dep)
+	if err == nil {
 		return r.reconcileOne(ctx, dep, injectTools, dep.Name, &dep.Spec.Template,
 			func(ctx context.Context) error {
 				return retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -111,29 +114,66 @@ func (r *ClientRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.R
 					return r.Update(ctx, d)
 				})
 			})
-	}
-	if !apierrors.IsNotFound(err) {
+	} else if !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}
 
 	sts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, req.NamespacedName, sts); err != nil {
+	err = r.Get(ctx, req.NamespacedName, sts)
+	if err == nil {
+		return r.reconcileOne(ctx, sts, injectTools, sts.Name, &sts.Spec.Template,
+			func(ctx context.Context) error {
+				return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+					s := &appsv1.StatefulSet{}
+					if err := r.Get(ctx, req.NamespacedName, s); err != nil {
+						return err
+					}
+					if !injectKeycloakClientCredentialsAnnotation(&s.Spec.Template, keycloakClientCredentialsSecretName(s.Namespace, s.Name)) {
+						return nil
+					}
+					return r.Update(ctx, s)
+				})
+			})
+	} else if !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+
+	sbx := &unstructured.Unstructured{}
+	sbx.SetGroupVersionKind(sandboxGVK)
+	if err = r.Get(ctx, req.NamespacedName, sbx); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
-	return r.reconcileOne(ctx, sts, injectTools, sts.Name, &sts.Spec.Template,
+	podLabels, _, _ := unstructured.NestedStringMap(sbx.Object, "spec", "podTemplate", "metadata", "labels")
+	podAnnotations, _, _ := unstructured.NestedStringMap(sbx.Object, "spec", "podTemplate", "metadata", "annotations")
+	saName, _, _ := unstructured.NestedString(sbx.Object, "spec", "podTemplate", "spec", "serviceAccountName")
+	syntheticTemplate := &corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{Labels: podLabels, Annotations: podAnnotations},
+		Spec:       corev1.PodSpec{ServiceAccountName: saName},
+	}
+	return r.reconcileOne(ctx, sbx, injectTools, sbx.GetName(), syntheticTemplate,
 		func(ctx context.Context) error {
 			return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-				s := &appsv1.StatefulSet{}
-				if err := r.Get(ctx, req.NamespacedName, s); err != nil {
+				fresh := &unstructured.Unstructured{}
+				fresh.SetGroupVersionKind(sandboxGVK)
+				if err := r.Get(ctx, req.NamespacedName, fresh); err != nil {
 					return err
 				}
-				if !injectKeycloakClientCredentialsAnnotation(&s.Spec.Template, keycloakClientCredentialsSecretName(s.Namespace, s.Name)) {
+				secretName := keycloakClientCredentialsSecretName(fresh.GetNamespace(), fresh.GetName())
+				annotations, _, _ := unstructured.NestedStringMap(fresh.Object, "spec", "podTemplate", "metadata", "annotations")
+				if annotations != nil && annotations[AnnotationKeycloakClientSecretName] == secretName {
 					return nil
 				}
-				return r.Update(ctx, s)
+				if annotations == nil {
+					annotations = map[string]string{}
+				}
+				annotations[AnnotationKeycloakClientSecretName] = secretName
+				if err := unstructured.SetNestedStringMap(fresh.Object, annotations, "spec", "podTemplate", "metadata", "annotations"); err != nil {
+					return fmt.Errorf("setting podTemplate annotations: %w", err)
+				}
+				return r.Update(ctx, fresh)
 			})
 		})
 }
@@ -437,6 +477,12 @@ func clientRegistrationWorkloadPredicate(obj client.Object) bool {
 		return workloadWantsOperatorClientReg(o.Spec.Template.Labels, true)
 	case *appsv1.StatefulSet:
 		return workloadWantsOperatorClientReg(o.Spec.Template.Labels, true)
+	case *unstructured.Unstructured:
+		if o.GroupVersionKind() != sandboxGVK {
+			return false
+		}
+		labels, _, _ := unstructured.NestedStringMap(o.Object, "spec", "podTemplate", "metadata", "labels")
+		return workloadWantsOperatorClientReg(labels, true)
 	default:
 		return false
 	}
@@ -446,13 +492,24 @@ func clientRegistrationWorkloadPredicate(obj client.Object) bool {
 // feature gates; the predicate uses injectTools=true so tool workloads are not dropped before gates load.
 func (r *ClientRegistrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	pred := predicate.NewPredicateFuncs(clientRegistrationWorkloadPredicate)
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		Named("clientregistration").
 		For(&appsv1.Deployment{}, builder.WithPredicates(pred)).
 		Watches(
 			&appsv1.StatefulSet{},
 			&handler.EnqueueRequestForObject{},
 			builder.WithPredicates(pred),
-		).
-		Complete(r)
+		)
+
+	if SandboxCRDExists(mgr.GetConfig()) {
+		sandboxObj := &unstructured.Unstructured{}
+		sandboxObj.SetGroupVersionKind(sandboxGVK)
+		b = b.Watches(
+			sandboxObj,
+			&handler.EnqueueRequestForObject{},
+			builder.WithPredicates(pred),
+		)
+	}
+
+	return b.Complete(r)
 }
