@@ -87,7 +87,9 @@ func (a *Admin) getOrCreateAudienceClientScope(ctx context.Context, token, realm
 		return "", err
 	}
 	if scopeID != "" {
-		_ = a.ensureAudienceMapper(ctx, token, realm, scopeID, scopeName, audience)
+		if err := a.ensureAudienceMapper(ctx, token, realm, scopeID, scopeName, audience); err != nil {
+			return "", fmt.Errorf("ensure audience mapper for existing scope %q: %w", scopeName, err)
+		}
 		return scopeID, nil
 	}
 
@@ -105,7 +107,9 @@ func (a *Admin) getOrCreateAudienceClientScope(ctx context.Context, token, realm
 	if scopeID == "" {
 		return "", fmt.Errorf("create client scope %q returned empty id", scopeName)
 	}
-	_ = a.ensureAudienceMapper(ctx, token, realm, scopeID, scopeName, audience)
+	if err := a.ensureAudienceMapper(ctx, token, realm, scopeID, scopeName, audience); err != nil {
+		return "", fmt.Errorf("ensure audience mapper for new scope %q: %w", scopeName, err)
+	}
 	return scopeID, nil
 }
 

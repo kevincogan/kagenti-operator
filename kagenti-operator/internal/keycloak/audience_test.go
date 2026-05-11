@@ -221,6 +221,58 @@ func TestEnsureAudienceScope_SkipsUpdateWhenCorrect(t *testing.T) {
 	}
 }
 
+// TestEnsureAudienceScope_MapperFailurePropagated verifies that when the mapper POST
+// returns a server error (e.g. 500), the error propagates to EnsureAudienceScope
+// instead of being silently swallowed (regression test for #348).
+func TestEnsureAudienceScope_MapperFailurePropagated(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case path == testMasterRealmTokenPath:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "tok"})
+
+		// Scope does not exist yet
+		case path == "/admin/realms/kagenti/client-scopes" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode([]clientScopeListItem{})
+
+		// Scope creation succeeds
+		case path == "/admin/realms/kagenti/client-scopes" && r.Method == http.MethodPost:
+			w.Header().Set("Location", srv.URL+"/admin/realms/kagenti/client-scopes/new-scope-id")
+			w.WriteHeader(http.StatusCreated)
+
+		// Mapper POST returns 500 (server error)
+		case strings.Contains(path, "/client-scopes/new-scope-id/protocol-mappers/models") && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"internal"}`))
+
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, path)
+		}
+	}))
+	defer srv.Close()
+
+	a := Admin{BaseURL: srv.URL, HTTPClient: srv.Client()}
+	token, err := a.PasswordGrantToken(context.Background(), "u", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = a.EnsureAudienceScope(context.Background(), token, AudienceParams{
+		Realm:                "kagenti",
+		ClientName:           "ns/wl",
+		AudienceClientID:     "spiffe://example.org/ns/ns/sa/wl",
+		AudienceScopeEnabled: true,
+	})
+	if err == nil {
+		t.Fatal("expected error when mapper POST fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "ensure audience mapper") {
+		t.Fatalf("expected error to contain 'ensure audience mapper', got: %s", err.Error())
+	}
+}
+
 func TestEnsureAudienceScope_Disabled(t *testing.T) {
 	a := Admin{}
 	err := a.EnsureAudienceScope(context.Background(), "t", AudienceParams{AudienceScopeEnabled: false})
