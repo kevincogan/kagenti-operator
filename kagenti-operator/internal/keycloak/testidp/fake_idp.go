@@ -78,9 +78,10 @@ type FakeIDP struct {
 	adminPass  string
 	tokenTTL   time.Duration
 	errorMode  int
-	clients    map[string]*ClientEntry // keyed by clientId
-	tokens     map[string]*IssuedToken // keyed by token string
-	scopes     map[string]scopeEntry   // keyed by scope ID
+	clients    map[string]*ClientEntry  // keyed by clientId
+	tokens     map[string]*IssuedToken  // keyed by token string
+	scopes     map[string]scopeEntry    // keyed by scope ID
+	mappers    map[string][]mapperEntry // protocol mappers keyed by scope ID
 	nextUUID   int
 	tokenCalls int
 	t          testing.TB
@@ -89,6 +90,14 @@ type FakeIDP struct {
 type scopeEntry struct {
 	ID   string
 	Name string
+}
+
+type mapperEntry struct {
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Protocol       string            `json:"protocol"`
+	ProtocolMapper string            `json:"protocolMapper"`
+	Config         map[string]string `json:"config"`
 }
 
 // Start creates and starts a new FakeIDP. Call Close() when done.
@@ -102,6 +111,7 @@ func Start(t testing.TB, opts ...Option) *FakeIDP {
 		clients:   make(map[string]*ClientEntry),
 		tokens:    make(map[string]*IssuedToken),
 		scopes:    make(map[string]scopeEntry),
+		mappers:   make(map[string][]mapperEntry),
 		t:         t,
 	}
 	for _, o := range opts {
@@ -233,9 +243,13 @@ func (f *FakeIDP) handler(w http.ResponseWriter, r *http.Request) {
 	case path == fmt.Sprintf("/admin/realms/%s/client-scopes", f.realm) && r.Method == http.MethodPost:
 		f.handleCreateClientScope(w, r)
 
+	// Protocol mapper list (GET)
+	case r.Method == http.MethodGet && strings.Contains(path, "/protocol-mappers/models"):
+		f.handleListProtocolMappers(w, r)
+
 	// Protocol mapper create (audience mapper)
 	case r.Method == http.MethodPost && strings.Contains(path, "/protocol-mappers/models"):
-		w.WriteHeader(http.StatusCreated)
+		f.handleCreateProtocolMapper(w, r)
 
 	// Realm default scope / client default scope PUTs
 	case r.Method == http.MethodPut && (strings.Contains(path, "/default-default-client-scopes/") || strings.Contains(path, "/default-client-scopes/")):
@@ -451,6 +465,52 @@ func (f *FakeIDP) handleCreateClientScope(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Location", fmt.Sprintf("%s/admin/realms/%s/client-scopes/%s",
 		f.Server.URL, f.realm, id))
 	w.WriteHeader(http.StatusCreated)
+}
+
+func (f *FakeIDP) handleListProtocolMappers(w http.ResponseWriter, r *http.Request) {
+	scopeID := f.scopeIDFromMappersPath(r.URL.Path)
+	f.mu.Lock()
+	mappers := f.mappers[scopeID]
+	f.mu.Unlock()
+	if mappers == nil {
+		mappers = []mapperEntry{}
+	}
+	writeJSON(w, mappers)
+}
+
+func (f *FakeIDP) handleCreateProtocolMapper(w http.ResponseWriter, r *http.Request) {
+	scopeID := f.scopeIDFromMappersPath(r.URL.Path)
+	var body struct {
+		Name           string            `json:"name"`
+		Protocol       string            `json:"protocol"`
+		ProtocolMapper string            `json:"protocolMapper"`
+		Config         map[string]string `json:"config"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	f.nextUUID++
+	entry := mapperEntry{
+		ID:             fmt.Sprintf("mapper-%d", f.nextUUID),
+		Name:           body.Name,
+		Protocol:       body.Protocol,
+		ProtocolMapper: body.ProtocolMapper,
+		Config:         body.Config,
+	}
+	f.mappers[scopeID] = append(f.mappers[scopeID], entry)
+	f.mu.Unlock()
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (f *FakeIDP) scopeIDFromMappersPath(path string) string {
+	prefix := fmt.Sprintf("/admin/realms/%s/client-scopes/", f.realm)
+	rest := strings.TrimPrefix(path, prefix)
+	if idx := strings.Index(rest, "/"); idx >= 0 {
+		return rest[:idx]
+	}
+	return rest
 }
 
 // issueToken creates a token and stores it. Caller must NOT hold f.mu.

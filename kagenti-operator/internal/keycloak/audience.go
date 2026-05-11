@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -66,6 +65,9 @@ func (a *Admin) EnsureAudienceScope(ctx context.Context, token string, p Audienc
 	if err != nil {
 		return err
 	}
+	if err := a.verifyAudienceMapper(ctx, token, p.Realm, scopeID, scopeName, p.AudienceClientID); err != nil {
+		return fmt.Errorf("verify audience mapper for scope %q: %w", scopeName, err)
+	}
 	_ = a.putRealmDefaultDefaultClientScope(ctx, token, p.Realm, scopeID)
 	for _, plat := range p.PlatformClientIDs {
 		plat = strings.TrimSpace(plat)
@@ -87,7 +89,9 @@ func (a *Admin) getOrCreateAudienceClientScope(ctx context.Context, token, realm
 		return "", err
 	}
 	if scopeID != "" {
-		_ = a.ensureAudienceMapper(ctx, token, realm, scopeID, scopeName, audience)
+		if err := a.ensureAudienceMapper(ctx, token, realm, scopeID, scopeName, audience); err != nil {
+			return "", fmt.Errorf("ensure audience mapper for existing scope %q: %w", scopeName, err)
+		}
 		return scopeID, nil
 	}
 
@@ -105,7 +109,9 @@ func (a *Admin) getOrCreateAudienceClientScope(ctx context.Context, token, realm
 	if scopeID == "" {
 		return "", fmt.Errorf("create client scope %q returned empty id", scopeName)
 	}
-	_ = a.ensureAudienceMapper(ctx, token, realm, scopeID, scopeName, audience)
+	if err := a.ensureAudienceMapper(ctx, token, realm, scopeID, scopeName, audience); err != nil {
+		return "", fmt.Errorf("ensure audience mapper for new scope %q: %w", scopeName, err)
+	}
 	return scopeID, nil
 }
 
@@ -219,30 +225,41 @@ func (a *Admin) ensureAudienceMapper(ctx context.Context, token, realm, scopeID,
 	return nil
 }
 
-// updateAudienceMapperIfNeeded fetches the existing mapper for the scope and updates
-// its included.custom.audience if it differs from the desired value.
-func (a *Admin) updateAudienceMapperIfNeeded(ctx context.Context, token, realm, scopeID, scopeName, audience string) error {
+// listAudienceMappers fetches all protocol mappers for a client scope.
+func (a *Admin) listAudienceMappers(ctx context.Context, token, realm, scopeID string) ([]protocolMapperRep, error) {
 	base := trimBaseURL(a.BaseURL)
 	endpoint := base + "/admin/realms/" + url.PathEscape(realm) + "/client-scopes/" + url.PathEscape(scopeID) + "/protocol-mappers/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := a.httpc().Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("keycloak list mappers: status %d: %s", resp.StatusCode, truncate(body, 256))
+		return nil, fmt.Errorf("keycloak list mappers: status %d: %s", resp.StatusCode, truncate(body, 256))
 	}
 
 	var mappers []protocolMapperRep
 	if err := json.Unmarshal(body, &mappers); err != nil {
-		return fmt.Errorf("keycloak list mappers decode: %w", err)
+		return nil, fmt.Errorf("keycloak list mappers decode: %w", err)
+	}
+	return mappers, nil
+}
+
+// updateAudienceMapperIfNeeded fetches the existing mapper for the scope and updates
+// its included.custom.audience if it differs from the desired value.
+// Returns an error if no matching mapper is found — this treats "no match" as a real
+// failure (e.g. Keycloak race or name mismatch) rather than silently ignoring it.
+func (a *Admin) updateAudienceMapperIfNeeded(ctx context.Context, token, realm, scopeID, scopeName, audience string) error {
+	mappers, err := a.listAudienceMappers(ctx, token, realm, scopeID)
+	if err != nil {
+		return err
 	}
 
 	for i := range mappers {
@@ -255,12 +272,10 @@ func (a *Admin) updateAudienceMapperIfNeeded(ctx context.Context, token, realm, 
 		if mappers[i].Config["included.custom.audience"] == audience {
 			return nil // already correct
 		}
-		// Update the mapper with the correct audience.
 		mappers[i].Config["included.custom.audience"] = audience
 		return a.putAudienceMapper(ctx, token, realm, scopeID, mappers[i])
 	}
-	slog.Debug("no matching audience mapper found for scope", "scope", scopeName, "scopeID", scopeID)
-	return nil
+	return fmt.Errorf("no matching audience mapper found for scope %q (scopeID %s)", scopeName, scopeID)
 }
 
 func (a *Admin) putAudienceMapper(ctx context.Context, token, realm, scopeID string, mapper protocolMapperRep) error {
@@ -287,6 +302,34 @@ func (a *Admin) putAudienceMapper(ctx context.Context, token, realm, scopeID str
 	}
 	body, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("keycloak update audience mapper: status %d: %s", resp.StatusCode, truncate(body, 256))
+}
+
+// verifyAudienceMapper is a defense-in-depth check that runs on every reconcile.
+// It GETs the mappers for a scope and ensures the oidc-audience-mapper exists with the
+// correct audience. If the mapper is missing (e.g. due to a prior transient failure),
+// it re-creates it. If the audience is stale, it updates it.
+// Cost: one extra GET per reconcile per audience-enabled scope; accepted tradeoff for
+// catching scopes left broken by prior transient failures.
+func (a *Admin) verifyAudienceMapper(ctx context.Context, token, realm, scopeID, scopeName, audience string) error {
+	mappers, err := a.listAudienceMappers(ctx, token, realm, scopeID)
+	if err != nil {
+		return err
+	}
+
+	for i := range mappers {
+		if mappers[i].Name != scopeName || mappers[i].ProtocolMapper != "oidc-audience-mapper" {
+			continue
+		}
+		if mappers[i].Config != nil && mappers[i].Config["included.custom.audience"] == audience {
+			return nil
+		}
+		if mappers[i].Config == nil {
+			mappers[i].Config = make(map[string]string)
+		}
+		mappers[i].Config["included.custom.audience"] = audience
+		return a.putAudienceMapper(ctx, token, realm, scopeID, mappers[i])
+	}
+	return a.ensureAudienceMapper(ctx, token, realm, scopeID, scopeName, audience)
 }
 
 func (a *Admin) putRealmDefaultDefaultClientScope(ctx context.Context, token, realm, scopeID string) error {
