@@ -56,7 +56,10 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: AgentCard is the Schema for the agentcards API.
+        description: |-
+          AgentCard binds an A2A agent card to a backing workload. The controller periodically
+          fetches the card from the referenced workload, verifies its JWS signature and SPIFFE
+          identity against the configured trust domain, and caches the result in status.
         properties:
           apiVersion:
             description: |-

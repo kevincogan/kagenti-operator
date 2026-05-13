@@ -345,7 +345,9 @@ type SkillParameter struct {
 // +kubebuilder:printcolumn:name="LastSync",type="date",JSONPath=".status.lastSyncTime",description="Last Sync Time"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// AgentCard is the Schema for the agentcards API.
+// AgentCard binds an A2A agent card to a backing workload. The controller periodically
+// fetches the card from the referenced workload, verifies its JWS signature and SPIFFE
+// identity against the configured trust domain, and caches the result in status.
 type AgentCard struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

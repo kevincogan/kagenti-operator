@@ -124,7 +124,9 @@ type AgentRuntimeStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="Runtime Phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// AgentRuntime is the Schema for the agentruntimes API.
+// AgentRuntime attaches runtime configuration to a backing workload classified as an
+// agent or tool, providing per-workload overrides for SPIFFE identity and OpenTelemetry
+// tracing. The controller reports pod configuration coverage and phase in status.
 type AgentRuntime struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

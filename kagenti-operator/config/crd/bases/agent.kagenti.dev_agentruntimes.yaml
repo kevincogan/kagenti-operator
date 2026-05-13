@@ -36,7 +36,10 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: AgentRuntime is the Schema for the agentruntimes API.
+        description: |-
+          AgentRuntime attaches runtime configuration to a backing workload classified as an
+          agent or tool, providing per-workload overrides for SPIFFE identity and OpenTelemetry
+          tracing. The controller reports pod configuration coverage and phase in status.
         properties:
           apiVersion:
             description: |-
