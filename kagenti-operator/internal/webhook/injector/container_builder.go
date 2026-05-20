@@ -109,22 +109,21 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainerWithSpireOption(spireEnabled 
 		},
 	}
 	if spireEnabled {
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "svid-output",
-			MountPath: "/opt",
-			ReadOnly:  true,
-		})
-	}
-
-	if spireEnabled {
-		// authbridge-envoy bundles spiffe-helper; the entrypoint reads
-		// helper.conf from this mount. Without it, the bundled
-		// spiffe-helper would fail to start on SPIRE_ENABLED=true.
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "spiffe-helper-config",
-			MountPath: "/etc/spiffe-helper",
-			ReadOnly:  true,
-		})
+		volumeMounts = append(volumeMounts,
+			corev1.VolumeMount{
+				Name:      "svid-output",
+				MountPath: "/opt",
+				ReadOnly:  true,
+			},
+			// authbridge-envoy bundles spiffe-helper; the entrypoint reads
+			// helper.conf from this mount. Without it, the bundled
+			// spiffe-helper would fail to start on SPIRE_ENABLED=true.
+			corev1.VolumeMount{
+				Name:      "spiffe-helper-config",
+				MountPath: "/etc/spiffe-helper",
+				ReadOnly:  true,
+			},
+		)
 	}
 
 	var env []corev1.EnvVar
