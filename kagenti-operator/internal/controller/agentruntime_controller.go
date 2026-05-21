@@ -660,7 +660,14 @@ func (r *AgentRuntimeReconciler) mapClusterConfigMapToAgentRuntimes(ctx context.
 // whose computed hash actually changed re-stamp the pod template).
 func (r *AgentRuntimeReconciler) mapNamespaceConfigMapToAgentRuntimes(ctx context.Context, obj client.Object) []reconcile.Request {
 	labels := obj.GetLabels()
-	isNsDefaults := labels[LabelNamespaceDefaults] == "true"
+	// goconst flags this literal as the 11th "true" in the codebase and
+	// suggests reusing AnnotationRestartPendingValue, but that constant
+	// is semantically a restart-pending marker, not a generic label-true
+	// value — reusing it would obscure intent. Existing code (e.g.
+	// defaults_config_reconciler.go) uses the same literal-true idiom
+	// for label checks; rather than introduce a fresh `labelValueTrue`
+	// constant only here, suppress the rule on this one line.
+	isNsDefaults := labels[LabelNamespaceDefaults] == "true" //nolint:goconst
 	isAuthBridgeRuntime := obj.GetName() == AuthBridgeRuntimeConfigMapName
 
 	if !isNsDefaults && !isAuthBridgeRuntime {
