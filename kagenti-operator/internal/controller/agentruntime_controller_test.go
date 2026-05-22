@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -33,6 +34,15 @@ import (
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 )
+
+type stubCardFetcher struct {
+	card *agentv1alpha1.AgentCardData
+	err  error
+}
+
+func (f *stubCardFetcher) Fetch(_ context.Context, _, _, _, _ string) (*agentv1alpha1.AgentCardData, error) {
+	return f.card, f.err
+}
 
 var _ = Describe("AgentRuntime Controller", func() {
 	const (
@@ -891,6 +901,72 @@ var _ = Describe("AgentRuntime Controller", func() {
 			r := &AgentRuntimeReconciler{Client: k8sClient, EnableCardDiscovery: false}
 			r.fetchAndUpdateCard(ctx, rt)
 			Expect(rt.Status.Card).To(BeNil())
+		})
+	})
+
+	Context("Card annotation patch must not wipe in-memory status", func() {
+		It("should persist CardSynced condition and card data after annotation patch", func() {
+			depName := "card-patch-deploy"
+			svcName := depName
+			dep := newDeployment(depName, namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: namespace},
+				Spec: corev1.ServiceSpec{
+					Selector: map[string]string{"app": depName},
+					Ports:    []corev1.ServicePort{{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, svc) }()
+
+			rt := newAgentRuntime("card-patch-rt", namespace, depName, agentv1alpha1.RuntimeTypeAgent)
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			// Pre-set conditions that would be set earlier in the reconcile loop
+			meta.SetStatusCondition(&rt.Status.Conditions, metav1.Condition{
+				Type: ConditionTypeTargetResolved, Status: metav1.ConditionTrue,
+				Reason: "TargetFound", Message: "resolved",
+			})
+			meta.SetStatusCondition(&rt.Status.Conditions, metav1.Condition{
+				Type: ConditionTypeConfigResolved, Status: metav1.ConditionTrue,
+				Reason: "ConfigResolved", Message: "resolved",
+			})
+
+			stubFetcher := &stubCardFetcher{
+				card: &agentv1alpha1.AgentCardData{
+					Name:    "Test Agent",
+					Version: "2.0",
+				},
+			}
+
+			r := &AgentRuntimeReconciler{
+				Client:              k8sClient,
+				EnableCardDiscovery: true,
+				AgentFetcher:        stubFetcher,
+			}
+			r.fetchAndUpdateCard(ctx, rt)
+
+			// Card data must survive the annotation patch
+			Expect(rt.Status.Card).NotTo(BeNil(), "card data must not be wiped by annotation patch")
+			Expect(rt.Status.Card.Name).To(Equal("Test Agent"))
+			Expect(rt.Status.Card.Version).To(Equal("2.0"))
+			Expect(rt.Status.Card.CardID).NotTo(BeEmpty())
+
+			// CardSynced condition must survive
+			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardSynced)
+			Expect(cardCond).NotTo(BeNil(), "CardSynced condition must not be wiped by annotation patch")
+			Expect(cardCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cardCond.Reason).To(Equal("CardSynced"))
+
+			// Conditions set before fetchAndUpdateCard must also survive
+			targetCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeTargetResolved)
+			Expect(targetCond).NotTo(BeNil(), "TargetResolved condition must not be wiped by annotation patch")
+			configCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeConfigResolved)
+			Expect(configCond).NotTo(BeNil(), "ConfigResolved condition must not be wiped by annotation patch")
 		})
 	})
 

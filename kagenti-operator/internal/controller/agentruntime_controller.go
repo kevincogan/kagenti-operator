@@ -94,7 +94,7 @@ type AgentRuntimeReconciler struct {
 
 	AgentFetcher         agentcard.Fetcher
 	AuthenticatedFetcher agentcard.AuthenticatedFetcher
-	SignatureProvider     signature.Provider
+	SignatureProvider    signature.Provider
 	EnableCardDiscovery  bool
 	SpireTrustDomain     string
 }
@@ -712,8 +712,15 @@ func (r *AgentRuntimeReconciler) fetchAndUpdateCard(ctx context.Context, rt *age
 // persistCardFetchAnnotation writes the change-detection annotation to the
 // AgentRuntime's metadata via a patch. Status().Update only persists the status
 // subresource, so annotations must be written separately.
+//
+// Patch refreshes rt from the API server response, which overwrites any
+// in-memory status mutations (conditions, card data) that have not yet been
+// persisted via Status().Update. We save and restore the status to prevent this.
 func (r *AgentRuntimeReconciler) persistCardFetchAnnotation(ctx context.Context, rt *agentv1alpha1.AgentRuntime, changeKey string) {
 	logger := log.FromContext(ctx)
+
+	savedStatus := rt.Status.DeepCopy()
+
 	patch := client.MergeFrom(rt.DeepCopy())
 	annotations := rt.GetAnnotations()
 	if annotations == nil {
@@ -724,6 +731,8 @@ func (r *AgentRuntimeReconciler) persistCardFetchAnnotation(ctx context.Context,
 	if err := r.Patch(ctx, rt, patch); err != nil {
 		logger.Error(err, "Failed to persist card fetch annotation")
 	}
+
+	rt.Status = *savedStatus
 }
 
 // fetchCard retrieves the agent card, choosing mTLS or plain HTTP based on
