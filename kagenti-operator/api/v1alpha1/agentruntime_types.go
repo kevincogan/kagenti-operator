@@ -174,6 +174,41 @@ type SamplingSpec struct {
 	Rate float64 `json:"rate"`
 }
 
+// CardStatus holds the fetched A2A agent card data along with fetch metadata
+// and optional verification results. Populated by the card discovery phase when
+// --enable-card-discovery is set.
+type CardStatus struct {
+	AgentCardData `json:",inline"`
+
+	// FetchedAt is the timestamp of the last successful card fetch.
+	// +optional
+	FetchedAt *metav1.Time `json:"fetchedAt,omitempty"`
+
+	// CardID is a SHA-256 content hash of the fetched card data.
+	// +optional
+	CardID string `json:"cardId,omitempty"`
+
+	// Protocol is the detected agent protocol (e.g., "a2a").
+	// +optional
+	Protocol string `json:"protocol,omitempty"`
+
+	// ValidSignature is the result of JWS signature verification.
+	// +optional
+	ValidSignature *bool `json:"validSignature,omitempty"`
+
+	// SignatureKeyID is the key ID from the verified JWS header.
+	// +optional
+	SignatureKeyID string `json:"signatureKeyID,omitempty"`
+
+	// SignatureVerificationDetails contains details or errors from signature verification.
+	// +optional
+	SignatureVerificationDetails string `json:"signatureVerificationDetails,omitempty"`
+
+	// AttestedAgentSpiffeID is the SPIFFE ID extracted from the mTLS peer certificate.
+	// +optional
+	AttestedAgentSpiffeID string `json:"attestedAgentSpiffeID,omitempty"`
+}
+
 // AgentRuntimeStatus defines the observed state of AgentRuntime.
 type AgentRuntimeStatus struct {
 	// Phase is the high-level state of the AgentRuntime
@@ -183,6 +218,10 @@ type AgentRuntimeStatus struct {
 	// ConfiguredPods is the count of pods with expected labels/config
 	// +optional
 	ConfiguredPods int32 `json:"configuredPods,omitempty"`
+
+	// Card holds A2A agent card data discovered from the workload's Service endpoint.
+	// +optional
+	Card *CardStatus `json:"card,omitempty"`
 
 	// Conditions represent the current state of the AgentRuntime
 	// +optional
@@ -195,6 +234,7 @@ type AgentRuntimeStatus struct {
 // +kubebuilder:printcolumn:name="Type",type="string",JSONPath=".spec.type",description="Workload Type"
 // +kubebuilder:printcolumn:name="Target",type="string",JSONPath=".spec.targetRef.name",description="Target Workload"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="Runtime Phase"
+// +kubebuilder:printcolumn:name="CardSynced",type="string",JSONPath=".status.conditions[?(@.type=='CardSynced')].status",description="Card Sync Status",priority=1
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // AgentRuntime attaches runtime configuration to a backing workload classified as an

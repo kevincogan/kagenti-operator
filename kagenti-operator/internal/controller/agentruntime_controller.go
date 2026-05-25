@@ -18,7 +18,11 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +47,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
+	"github.com/kagenti/operator/internal/agentcard"
+	"github.com/kagenti/operator/internal/signature"
 )
 
 const (
@@ -60,6 +66,11 @@ const (
 	ConditionTypeReady          = "Ready"
 	ConditionTypeTargetResolved = "TargetResolved"
 	ConditionTypeConfigResolved = "ConfigResolved"
+	ConditionTypeCardSynced     = "CardSynced"
+
+	// AnnotationLastCardFetchHash stores the change-detection key used to skip
+	// redundant card fetches when the workload's pod template has not changed.
+	AnnotationLastCardFetchHash = "agent.kagenti.dev/last-card-fetch-hash"
 
 	// KindSandbox is the workload kind for agent-sandbox CRs.
 	KindSandbox = "Sandbox"
@@ -80,6 +91,12 @@ type AgentRuntimeReconciler struct {
 	Scheme    *runtime.Scheme
 	Recorder  record.EventRecorder
 	APIReader client.Reader // uncached reader for cross-namespace ConfigMap reads
+
+	AgentFetcher         agentcard.Fetcher
+	AuthenticatedFetcher agentcard.AuthenticatedFetcher
+	SignatureProvider    signature.Provider
+	EnableCardDiscovery  bool
+	SpireTrustDomain     string
 }
 
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agentruntimes,verbs=get;list;watch;create;update;patch;delete
@@ -91,6 +108,7 @@ type AgentRuntimeReconciler struct {
 // +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes/scale,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 
 func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -177,6 +195,9 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		r.setCondition(rt, ConditionTypeConfigResolved, metav1.ConditionTrue, "ConfigResolved",
 			"Configuration resolved successfully")
 	}
+
+	// 5.5. Card discovery phase: fetch agent card from Service endpoint
+	r.fetchAndUpdateCard(ctx, rt)
 
 	// 6. Apply labels and annotations to the target workload
 	if err := r.applyWorkloadConfig(ctx, rt, configResult.Hash); err != nil {
@@ -423,6 +444,81 @@ func (r *AgentRuntimeReconciler) countConfiguredPods(ctx context.Context, rt *ag
 	return count, nil
 }
 
+// resolveServiceForWorkload finds the Service that fronts the target workload.
+// It first tries a Service with the same name as the Deployment (standard convention),
+// then falls back to selector matching against the Deployment's pod template labels.
+func (r *AgentRuntimeReconciler) resolveServiceForWorkload(ctx context.Context, namespace string, ref agentv1alpha1.TargetRef) (*corev1.Service, int32, error) {
+	logger := log.FromContext(ctx)
+
+	svc := &corev1.Service{}
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: namespace}, svc); err == nil {
+		port := serviceHTTPPort(svc)
+		logger.V(1).Info("Resolved service by name", "service", ref.Name, "port", port)
+		return svc, port, nil
+	}
+
+	acc, ok := newRuntimePodTemplateAccessor(ref.Kind)
+	if !ok {
+		return nil, 0, fmt.Errorf("unsupported workload kind for service resolution: %s", ref.Kind)
+	}
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: namespace}, acc.obj); err != nil {
+		return nil, 0, fmt.Errorf("failed to get workload %s/%s: %w", ref.Kind, ref.Name, err)
+	}
+	podLabels := acc.getPodLabels(acc.obj)
+	if len(podLabels) == 0 {
+		return nil, 0, fmt.Errorf("workload %s/%s has no pod template labels for selector matching", ref.Kind, ref.Name)
+	}
+
+	svcList := &corev1.ServiceList{}
+	if err := r.List(ctx, svcList, client.InNamespace(namespace)); err != nil {
+		return nil, 0, fmt.Errorf("failed to list services: %w", err)
+	}
+
+	for i := range svcList.Items {
+		s := &svcList.Items[i]
+		if s.Spec.Selector == nil {
+			continue
+		}
+		if selectorMatchesLabels(s.Spec.Selector, podLabels) {
+			port := serviceHTTPPort(s)
+			logger.V(1).Info("Resolved service by selector match", "service", s.Name, "port", port)
+			return s, port, nil
+		}
+	}
+
+	return nil, 0, fmt.Errorf("no Service matches workload %s/%s in namespace %s", ref.Kind, ref.Name, namespace)
+}
+
+func selectorMatchesLabels(selector, labels map[string]string) bool {
+	for k, v := range selector {
+		if labels[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func serviceHTTPPort(svc *corev1.Service) int32 {
+	for _, p := range svc.Spec.Ports {
+		if strings.EqualFold(p.Name, "http") || p.Port == 80 || p.Port == 8080 || p.Port == 8000 {
+			return p.Port
+		}
+	}
+	if len(svc.Spec.Ports) > 0 {
+		return svc.Spec.Ports[0].Port
+	}
+	return 8000
+}
+
+func getAgentTLSPort(svc *corev1.Service) int32 {
+	for _, p := range svc.Spec.Ports {
+		if p.Name == AgentTLSPortName {
+			return p.Port
+		}
+	}
+	return 0
+}
+
 // isPodOwnedByWorkload checks if a pod is transitively owned by the named workload.
 // For Deployments: Pod → ReplicaSet (<deployment>-<pod-template-hash>) → Deployment.
 // For StatefulSets: Pod is directly owned by the StatefulSet.
@@ -531,6 +627,181 @@ func (r *AgentRuntimeReconciler) setCondition(rt *agentv1alpha1.AgentRuntime, co
 		Reason:             reason,
 		Message:            message,
 	})
+}
+
+// fetchAndUpdateCard discovers the agent card from the workload's Service endpoint
+// and populates status.card. Skips fetch when the feature flag is disabled or
+// when the workload's change-detection key has not changed.
+func (r *AgentRuntimeReconciler) fetchAndUpdateCard(ctx context.Context, rt *agentv1alpha1.AgentRuntime) {
+	logger := log.FromContext(ctx)
+
+	if !r.EnableCardDiscovery {
+		if rt.Status.Card != nil {
+			rt.Status.Card = nil
+			r.setCondition(rt, ConditionTypeCardSynced, metav1.ConditionFalse, "CardDiscoveryDisabled",
+				"Card discovery is disabled; stale card data cleared")
+		}
+		return
+	}
+
+	changeKey := r.workloadChangeKey(ctx, rt)
+	annotations := rt.GetAnnotations()
+	lastHash := ""
+	if annotations != nil {
+		lastHash = annotations[AnnotationLastCardFetchHash]
+	}
+	if changeKey != "" && changeKey == lastHash && rt.Status.Card != nil {
+		r.setCondition(rt, ConditionTypeCardSynced, metav1.ConditionTrue, "FetchSkipped",
+			"Pod template unchanged; existing card data still valid")
+		return
+	}
+
+	svc, port, err := r.resolveServiceForWorkload(ctx, rt.Namespace, rt.Spec.TargetRef)
+	if err != nil {
+		logger.V(1).Info("Service resolution failed for card discovery", "error", err)
+		r.setCondition(rt, ConditionTypeCardSynced, metav1.ConditionFalse, "ServiceNotFound", err.Error())
+		return
+	}
+
+	protocol := agentcard.A2AProtocol
+	cardData, fetchResult, err := r.fetchCard(ctx, rt, svc, port, protocol)
+	if err != nil {
+		logger.Error(err, "Card fetch failed", "workload", rt.Spec.TargetRef.Name)
+		r.setCondition(rt, ConditionTypeCardSynced, metav1.ConditionFalse, "CardFetchFailed", err.Error())
+		return
+	}
+
+	newCardID := computeCardContentHash(cardData)
+
+	cardStatus := &agentv1alpha1.CardStatus{
+		AgentCardData: *cardData,
+		CardID:        newCardID,
+		Protocol:      protocol,
+	}
+
+	if rt.Status.Card != nil && rt.Status.Card.CardID == newCardID {
+		cardStatus.FetchedAt = rt.Status.Card.FetchedAt
+	} else {
+		now := metav1.Now()
+		cardStatus.FetchedAt = &now
+	}
+
+	if fetchResult != nil && fetchResult.AgentSpiffeID != "" {
+		cardStatus.AttestedAgentSpiffeID = fetchResult.AgentSpiffeID
+	}
+
+	if r.SignatureProvider != nil && len(cardData.Signatures) > 0 {
+		vr, verifyErr := r.SignatureProvider.VerifySignature(ctx, cardData, cardData.Signatures)
+		if verifyErr != nil {
+			logger.Error(verifyErr, "Signature verification infrastructure error")
+			cardStatus.SignatureVerificationDetails = verifyErr.Error()
+		} else if vr != nil {
+			cardStatus.ValidSignature = &vr.Verified
+			cardStatus.SignatureKeyID = vr.KeyID
+			cardStatus.SignatureVerificationDetails = vr.Details
+		}
+	}
+
+	rt.Status.Card = cardStatus
+	r.setCondition(rt, ConditionTypeCardSynced, metav1.ConditionTrue, "CardSynced",
+		fmt.Sprintf("Successfully fetched agent card for %s", cardData.Name))
+
+	r.persistCardFetchAnnotation(ctx, rt, changeKey)
+}
+
+// persistCardFetchAnnotation writes the change-detection annotation to the
+// AgentRuntime's metadata via a patch. Status().Update only persists the status
+// subresource, so annotations must be written separately.
+//
+// Patch refreshes rt from the API server response, which overwrites any
+// in-memory status mutations (conditions, card data) that have not yet been
+// persisted via Status().Update. We save and restore the status to prevent this.
+func (r *AgentRuntimeReconciler) persistCardFetchAnnotation(ctx context.Context, rt *agentv1alpha1.AgentRuntime, changeKey string) {
+	logger := log.FromContext(ctx)
+
+	savedStatus := rt.Status.DeepCopy()
+
+	patch := client.MergeFrom(rt.DeepCopy())
+	annotations := rt.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[AnnotationLastCardFetchHash] = changeKey
+	rt.SetAnnotations(annotations)
+	if err := r.Patch(ctx, rt, patch); err != nil {
+		logger.Error(err, "Failed to persist card fetch annotation")
+	}
+
+	rt.Status = *savedStatus
+}
+
+// fetchCard retrieves the agent card, choosing mTLS or plain HTTP based on
+// service port availability and fetcher configuration.
+func (r *AgentRuntimeReconciler) fetchCard(
+	ctx context.Context, rt *agentv1alpha1.AgentRuntime,
+	svc *corev1.Service, port int32, protocol string,
+) (*agentv1alpha1.AgentCardData, *agentcard.FetchResult, error) {
+	logger := log.FromContext(ctx)
+	ref := rt.Spec.TargetRef
+
+	if r.AuthenticatedFetcher != nil {
+		tlsPort := getAgentTLSPort(svc)
+		if tlsPort > 0 {
+			secureURL := agentcard.GetSecureServiceURL(svc.Name, rt.Namespace, tlsPort)
+			fetchResult, err := r.AuthenticatedFetcher.FetchAuthenticated(ctx, protocol, secureURL)
+			if err != nil {
+				return nil, nil, fmt.Errorf("authenticated fetch failed for %s: %w", ref.Name, err)
+			}
+			if fetchResult.CardData == nil {
+				return nil, nil, fmt.Errorf("authenticated fetch returned nil card data for %s", ref.Name)
+			}
+			return fetchResult.CardData, fetchResult, nil
+		}
+		logger.Info("TLS port not found, falling back to HTTP fetch",
+			"service", svc.Name, "expectedPortName", AgentTLSPortName)
+		if r.Recorder != nil {
+			r.Recorder.Event(rt, corev1.EventTypeWarning, "FallbackToHTTP",
+				fmt.Sprintf("Service %s has no %s port; fetch is unverified", svc.Name, AgentTLSPortName))
+		}
+	}
+
+	if r.AgentFetcher == nil {
+		return nil, nil, fmt.Errorf("no fetcher configured for card discovery")
+	}
+
+	serviceURL := agentcard.GetServiceURL(svc.Name, rt.Namespace, port)
+	cardData, err := r.AgentFetcher.Fetch(ctx, protocol, serviceURL, ref.Name, rt.Namespace)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch failed for %s: %w", ref.Name, err)
+	}
+	return cardData, nil, nil
+}
+
+// workloadChangeKey returns a string that changes when the workload's pod
+// template changes. For Deployments this is the observed generation;
+// for StatefulSets and Sandboxes it is the resource generation.
+func (r *AgentRuntimeReconciler) workloadChangeKey(ctx context.Context, rt *agentv1alpha1.AgentRuntime) string {
+	ref := rt.Spec.TargetRef
+	acc, ok := newRuntimePodTemplateAccessor(ref.Kind)
+	if !ok {
+		return ""
+	}
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: rt.Namespace}, acc.obj); err != nil {
+		return ""
+	}
+	return strconv.FormatInt(acc.obj.GetGeneration(), 10)
+}
+
+func computeCardContentHash(cardData *agentv1alpha1.AgentCardData) string {
+	if cardData == nil {
+		return ""
+	}
+	data, err := json.Marshal(cardData)
+	if err != nil {
+		return ""
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
 }
 
 // templateConfigMapNames lists the well-known ConfigMaps that authbridge sidecars

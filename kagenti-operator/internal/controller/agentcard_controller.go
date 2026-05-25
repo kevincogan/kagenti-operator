@@ -171,6 +171,15 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
+	if agentCard.CreationTimestamp.After(time.Now().Add(-5 * time.Minute)) {
+		agentCardLogger.Info("AgentCard is deprecated; card data is now available via AgentRuntime status.card. Migrate to AgentRuntime-based discovery.",
+			"agentCard", agentCard.Name, "namespace", agentCard.Namespace)
+		if r.Recorder != nil {
+			r.Recorder.Event(agentCard, corev1.EventTypeWarning, "Deprecated",
+				"AgentCard is deprecated; card data is now available via AgentRuntime status.card. Migrate to AgentRuntime-based discovery.")
+		}
+	}
+
 	workload, err := r.getWorkload(ctx, agentCard)
 	if err != nil {
 		agentCardLogger.Error(err, "Failed to get workload", "agentCard", agentCard.Name)

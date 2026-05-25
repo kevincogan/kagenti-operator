@@ -101,6 +101,8 @@ func main() {
 	var enforceNetworkPolicies bool
 	var enableMLflow bool
 
+	var enableCardDiscovery bool
+
 	var enableVerifiedFetch bool
 	var verifiedFetchSpiffeSocket string
 
@@ -142,6 +144,8 @@ func main() {
 	flag.BoolVar(&enableMLflow, "enable-mlflow", false,
 		"Enable MLflow experiment tracking integration")
 
+	flag.BoolVar(&enableCardDiscovery, "enable-card-discovery", false,
+		"Enable automatic agent card discovery from AgentRuntime workloads into status.card")
 	flag.BoolVar(&enableVerifiedFetch, "enable-verified-fetch", false,
 		"Enable mTLS-authenticated fetch of agent cards via SPIFFE identity")
 	flag.StringVar(&verifiedFetchSpiffeSocket, "verified-fetch-spiffe-socket",
@@ -419,12 +423,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.AgentRuntimeReconciler{
-		Client:    mgr.GetClient(),
-		APIReader: mgr.GetAPIReader(),
-		Scheme:    mgr.GetScheme(),
-		Recorder:  mgr.GetEventRecorderFor("agentruntime-controller"),
-	}).SetupWithManager(mgr); err != nil {
+	artReconciler := &controller.AgentRuntimeReconciler{
+		Client:              mgr.GetClient(),
+		APIReader:           mgr.GetAPIReader(),
+		Scheme:              mgr.GetScheme(),
+		Recorder:            mgr.GetEventRecorderFor("agentruntime-controller"),
+		EnableCardDiscovery: enableCardDiscovery,
+		SpireTrustDomain:    spireTrustDomain,
+	}
+	if enableCardDiscovery {
+		artReconciler.AgentFetcher = agentFetcher
+		artReconciler.SignatureProvider = sigProvider
+		if authenticatedFetcher != nil {
+			artReconciler.AuthenticatedFetcher = authenticatedFetcher
+		}
+		setupLog.Info("Card discovery enabled for AgentRuntime controller")
+	}
+	if err = artReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentRuntime")
 		os.Exit(1)
 	}

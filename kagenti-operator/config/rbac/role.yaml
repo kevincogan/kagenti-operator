@@ -124,20 +124,20 @@ rules:
 - apiGroups:
   - mlflow.opendatahub.io
   resources:
+  - mlflowexperiments
+  verbs:
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - mlflow.opendatahub.io
+  resources:
   - mlflows
   verbs:
   - get
   - list
   - watch
-- apiGroups:
-  - mlflow.opendatahub.io
-  resources:
-  - mlflowexperiments
-  verbs:
-  - get
-  - list
-  - watch
-  - update
 - apiGroups:
   - networking.k8s.io
   resources:

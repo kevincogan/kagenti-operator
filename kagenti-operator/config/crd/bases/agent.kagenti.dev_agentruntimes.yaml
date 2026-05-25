@@ -30,6 +30,11 @@ spec:
       jsonPath: .status.phase
       name: Phase
       type: string
+    - description: Card Sync Status
+      jsonPath: .status.conditions[?(@.type=='CardSynced')].status
+      name: CardSynced
+      priority: 1
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -140,6 +145,13 @@ spec:
                   mtls.mode > "disabled". Setting mtlsMode != disabled implicitly
                   requires SPIRE — the operator auto-enables spire for the workload.
 
+                  CR-empty vs CR="disabled" are observably different in
+                  `kubectl get agentruntime -o yaml` (the former omits the field,
+                  the latter shows mtlsMode: disabled) but produce the same
+                  effective mode: empty falls through to the namespace ConfigMap,
+                  "disabled" is an explicit override that pins mode off even when
+                  the namespace default is non-disabled.
+
                   Note: changing mtlsMode triggers a pod rollout because authbridge
                   cannot hot-reload mTLS config (the byte-peek listener is wired at
                   process start).
@@ -207,6 +219,220 @@ spec:
           status:
             description: AgentRuntimeStatus defines the observed state of AgentRuntime.
             properties:
+              card:
+                description: Card holds A2A agent card data discovered from the workload's
+                  Service endpoint.
+                properties:
+                  attestedAgentSpiffeID:
+                    description: AttestedAgentSpiffeID is the SPIFFE ID extracted
+                      from the mTLS peer certificate.
+                    type: string
+                  capabilities:
+                    description: The A2A capability set supported by the agent.
+                    properties:
+                      extensions:
+                        description: A list of protocol extensions supported by the
+                          agent.
+                        items:
+                          description: AgentExtension describes an A2A protocol extension
+                            supported by the agent.
+                          properties:
+                            description:
+                              description: A human-readable description of how this
+                                agent uses the extension.
+                              type: string
+                            params:
+                              additionalProperties:
+                                x-kubernetes-preserve-unknown-fields: true
+                              description: Extension-specific configuration parameters.
+                              type: object
+                            required:
+                              description: |-
+                                If true, the client must understand and comply with the extension's
+                                requirements.
+                              type: boolean
+                            uri:
+                              description: The unique URI identifying the extension.
+                              type: string
+                          type: object
+                        type: array
+                      pushNotifications:
+                        description: |-
+                          Indicates if the agent supports sending push notifications for
+                          asynchronous task updates.
+                        type: boolean
+                      streaming:
+                        description: Indicates if the agent supports streaming responses.
+                        type: boolean
+                    type: object
+                  cardId:
+                    description: CardID is a SHA-256 content hash of the fetched card
+                      data.
+                    type: string
+                  defaultInputModes:
+                    description: |-
+                      The set of interaction modes that the agent supports across all skills,
+                      defined as media types.
+                    items:
+                      type: string
+                    type: array
+                  defaultOutputModes:
+                    description: The media types supported as outputs from this agent.
+                    items:
+                      type: string
+                    type: array
+                  description:
+                    description: |-
+                      A human-readable description of the agent, assisting users and other
+                      agents in understanding its purpose.
+                    type: string
+                  documentationUrl:
+                    description: A URL providing additional documentation about the
+                      agent.
+                    type: string
+                  fetchedAt:
+                    description: FetchedAt is the timestamp of the last successful
+                      card fetch.
+                    format: date-time
+                    type: string
+                  iconUrl:
+                    description: A URL to an icon for the agent.
+                    type: string
+                  name:
+                    description: A human-readable name for the agent.
+                    type: string
+                  protocol:
+                    description: Protocol is the detected agent protocol (e.g., "a2a").
+                    type: string
+                  provider:
+                    description: The service provider of the agent.
+                    properties:
+                      organization:
+                        description: The name of the agent provider's organization.
+                        type: string
+                      url:
+                        description: A URL for the agent provider's website or relevant
+                          documentation.
+                        type: string
+                    type: object
+                  signatureKeyID:
+                    description: SignatureKeyID is the key ID from the verified JWS
+                      header.
+                    type: string
+                  signatureVerificationDetails:
+                    description: SignatureVerificationDetails contains details or
+                      errors from signature verification.
+                    type: string
+                  signatures:
+                    description: JWS signatures per A2A spec §8.4.2.
+                    items:
+                      description: AgentCardSignature represents a JWS signature on
+                        an AgentCard (A2A spec §8.4.2).
+                      properties:
+                        header:
+                          description: Header contains optional unprotected JWS header
+                            parameters.
+                          properties:
+                            timestamp:
+                              description: Timestamp is when the signature was created
+                                (ISO 8601 string)
+                              type: string
+                          type: object
+                        protected:
+                          description: Protected is the base64url-encoded JWS protected
+                            header (contains alg, kid, x5c).
+                          type: string
+                        signature:
+                          description: Signature is the base64url-encoded JWS signature
+                            value.
+                          type: string
+                      required:
+                      - protected
+                      - signature
+                      type: object
+                    type: array
+                  skills:
+                    description: |-
+                      Skills represent the abilities of an agent. A skill is a focused set of
+                      behaviors that the agent is likely to succeed at.
+                    items:
+                      description: AgentSkill represents a skill offered by the agent.
+                      properties:
+                        description:
+                          description: A detailed description of the skill.
+                          type: string
+                        examples:
+                          description: Example prompts or scenarios that this skill
+                            can handle.
+                          items:
+                            type: string
+                          type: array
+                        id:
+                          description: A unique identifier for the agent's skill.
+                          type: string
+                        inputModes:
+                          description: |-
+                            The set of supported input media types for this skill, overriding the
+                            agent's defaults.
+                          items:
+                            type: string
+                          type: array
+                        name:
+                          description: A human-readable name for the skill.
+                          type: string
+                        outputModes:
+                          description: |-
+                            The set of supported output media types for this skill, overriding the
+                            agent's defaults.
+                          items:
+                            type: string
+                          type: array
+                        parameters:
+                          description: The parameters accepted by this skill.
+                          items:
+                            description: SkillParameter defines a parameter accepted
+                              by a skill.
+                            properties:
+                              default:
+                                description: The default value for this parameter.
+                                type: string
+                              description:
+                                description: A human-readable description of the parameter.
+                                type: string
+                              name:
+                                description: The name of the parameter.
+                                type: string
+                              required:
+                                description: Indicates if this parameter must be provided.
+                                type: boolean
+                              type:
+                                description: The type of the parameter (e.g., "string",
+                                  "number", "boolean", "object", "array").
+                                type: string
+                            type: object
+                          type: array
+                        tags:
+                          description: A set of keywords describing the skill's capabilities.
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    type: array
+                  supportsAuthenticatedExtendedCard:
+                    description: |-
+                      Indicates if the agent supports providing an extended agent card when
+                      authenticated.
+                    type: boolean
+                  url:
+                    description: The URL of the agent's endpoint.
+                    type: string
+                  validSignature:
+                    description: ValidSignature is the result of JWS signature verification.
+                    type: boolean
+                  version:
+                    description: The version of the agent.
+                    type: string
+                type: object
               conditions:
                 description: Conditions represent the current state of the AgentRuntime
                 items:
