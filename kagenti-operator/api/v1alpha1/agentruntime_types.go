@@ -126,6 +126,14 @@ type AgentRuntimeSpec struct {
 	// +optional
 	// +kubebuilder:validation:Enum=disabled;permissive;strict
 	MTLSMode string `json:"mtlsMode,omitempty"`
+
+	// Skills declares OCI skill images to mount into the agent pod as
+	// Kubernetes ImageVolumes. Each skill is mounted read-only at
+	// /agent/skills/<name>/. Requires the skillImageVolumes feature gate
+	// and Kubernetes 1.31+ with the ImageVolume feature gate enabled.
+	// +optional
+	// +kubebuilder:validation:MaxItems=20
+	Skills []SkillImageRef `json:"skills,omitempty"`
 }
 
 // IdentitySpec configures workload identity for an AgentRuntime.
@@ -207,6 +215,41 @@ type CardStatus struct {
 	// AttestedAgentSpiffeID is the SPIFFE ID extracted from the mTLS peer certificate.
 	// +optional
 	AttestedAgentSpiffeID string `json:"attestedAgentSpiffeID,omitempty"`
+}
+
+// +kubebuilder:validation:Enum=Always;Never;IfNotPresent
+type SkillPullPolicy string
+
+const (
+	SkillPullAlways       SkillPullPolicy = "Always"
+	SkillPullNever        SkillPullPolicy = "Never"
+	SkillPullIfNotPresent SkillPullPolicy = "IfNotPresent"
+)
+
+// SkillImageRef identifies an OCI skill image to mount into the agent pod.
+type SkillImageRef struct {
+	// Name is a unique identifier for this skill mount, used as the volume
+	// name suffix (skill-<name>).
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=58
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// Image is the OCI image reference for the skill.
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
+
+	// MountPath is the absolute path where the skill image is mounted in
+	// the container. Different agent frameworks expect skills in different
+	// locations (e.g. /agent/skills/my-skill, /app/.claude/skills/my-skill).
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^/.*`
+	MountPath string `json:"mountPath"`
+
+	// PullPolicy for pulling the OCI skill image. Defaults to Always for
+	// :latest tags and IfNotPresent otherwise (standard Kubernetes behavior).
+	// +optional
+	PullPolicy SkillPullPolicy `json:"pullPolicy,omitempty"`
 }
 
 // AgentRuntimeStatus defines the observed state of AgentRuntime.

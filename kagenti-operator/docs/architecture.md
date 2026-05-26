@@ -70,8 +70,10 @@ The Kagenti Operator is a Kubernetes controller that implements the [Operator Pa
 - Watches AgentRuntime CRs, Deployments, StatefulSets, and ConfigMaps
 - Applies `kagenti.io/type` label and `kagenti.io/config-hash` annotation to target workloads
 - Computes config hash from 3-layer merged configuration (cluster defaults → namespace defaults → CR overrides)
-- Triggers rolling updates when configuration changes (any layer)
-- On CR deletion: preserves type label, updates config-hash to defaults-only, removes managed-by label
+- Mounts OCI skill images as Kubernetes ImageVolumes when the `skillImageVolumes` feature gate is enabled (see [SkillImageRef](api-reference.md#skillimageref))
+- Sets `kagenti.io/skills` annotation on target workload metadata with mounted skill names for downstream discovery
+- Triggers rolling updates when configuration changes (any layer, including skill additions/removals)
+- On CR deletion: preserves type label, updates config-hash to defaults-only, removes managed-by label, skill volumes, and `kagenti.io/skills` annotation
 - Coordinates with the AuthBridge mutating webhook (in-process) which injects sidecars at Pod CREATE time
 
 ### Supporting Components

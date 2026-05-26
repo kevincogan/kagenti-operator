@@ -22,6 +22,10 @@ type FeatureGates struct {
 	//   true            → resolved path: webhook reads namespace ConfigMaps at
 	//                     admission time and injects literal env var values.
 	PerWorkloadConfigResolution bool `json:"perWorkloadConfigResolution" yaml:"perWorkloadConfigResolution"`
+	// SkillImageVolumes controls whether the AgentRuntime controller mounts OCI
+	// skill images as Kubernetes ImageVolumes into agent pods. Requires
+	// Kubernetes 1.31+ with the ImageVolume feature gate enabled.
+	SkillImageVolumes bool `json:"skillImageVolumes" yaml:"skillImageVolumes"`
 }
 
 // DefaultFeatureGates returns feature gates with sidecar injection enabled for

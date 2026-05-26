@@ -430,6 +430,7 @@ func main() {
 		Recorder:            mgr.GetEventRecorderFor("agentruntime-controller"),
 		EnableCardDiscovery: enableCardDiscovery,
 		SpireTrustDomain:    spireTrustDomain,
+		GetFeatureGates:     featureGateLoader.Get,
 	}
 	if enableCardDiscovery {
 		artReconciler.AgentFetcher = agentFetcher

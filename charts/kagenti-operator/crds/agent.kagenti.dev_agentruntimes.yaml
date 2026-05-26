@@ -102,6 +102,15 @@ spec:
               identity:
                 description: Identity specifies optional per-workload identity overrides
                 properties:
+                  allowedAudiences:
+                    description: |-
+                      AllowedAudiences specifies additional JWT audiences that the AuthProxy
+                      sidecar should accept for inbound requests. This is a transitional
+                      mechanism to support application-to-agent flows until the auth model
+                      is finalized. See https://github.com/kagenti/kagenti-operator/issues/368
+                    items:
+                      type: string
+                    type: array
                   spiffe:
                     description: SPIFFE specifies SPIFFE identity configuration overrides
                     properties:
@@ -151,6 +160,52 @@ spec:
                 - permissive
                 - strict
                 type: string
+              skills:
+                description: |-
+                  Skills declares OCI skill images to mount into the agent pod as
+                  Kubernetes ImageVolumes. Each skill is mounted read-only at
+                  /agent/skills/<name>/. Requires the skillImageVolumes feature gate
+                  and Kubernetes 1.31+ with the ImageVolume feature gate enabled.
+                items:
+                  description: SkillImageRef identifies an OCI skill image to mount
+                    into the agent pod.
+                  properties:
+                    image:
+                      description: Image is the OCI image reference for the skill.
+                      minLength: 1
+                      type: string
+                    mountPath:
+                      description: |-
+                        MountPath is the absolute path where the skill image is mounted in
+                        the container. Different agent frameworks expect skills in different
+                        locations (e.g. /agent/skills/my-skill, /app/.claude/skills/my-skill).
+                      minLength: 1
+                      pattern: ^/.*
+                      type: string
+                    name:
+                      description: |-
+                        Name is a unique identifier for this skill mount, used as the volume
+                        name suffix (skill-<name>).
+                      maxLength: 58
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$
+                      type: string
+                    pullPolicy:
+                      description: |-
+                        PullPolicy for pulling the OCI skill image. Defaults to Always for
+                        :latest tags and IfNotPresent otherwise (standard Kubernetes behavior).
+                      enum:
+                      - Always
+                      - Never
+                      - IfNotPresent
+                      type: string
+                  required:
+                  - image
+                  - mountPath
+                  - name
+                  type: object
+                maxItems: 20
+                type: array
               targetRef:
                 description: TargetRef identifies the workload backing this agent
                   runtime (duck typing).

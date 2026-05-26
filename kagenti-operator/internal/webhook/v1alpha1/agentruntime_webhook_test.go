@@ -310,3 +310,133 @@ func TestAgentRuntimeValidator_MTLSCompatWithMode(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateSkills(t *testing.T) {
+	t.Run("empty skills is valid", func(t *testing.T) {
+		if err := validateSkills(nil); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("valid skills succeed", func(t *testing.T) {
+		skills := []agentv1alpha1.SkillImageRef{
+			{Name: "resume-reviewer", Image: "ghcr.io/example/resume:v1", MountPath: "/agent/skills/resume-reviewer"},
+			{Name: "blog-writer", Image: "ghcr.io/example/blog:v1", MountPath: "/agent/skills/blog-writer"},
+		}
+		if err := validateSkills(skills); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("duplicate names rejected", func(t *testing.T) {
+		skills := []agentv1alpha1.SkillImageRef{
+			{Name: "my-skill", Image: "img:v1", MountPath: "/skills/a"},
+			{Name: "my-skill", Image: "img:v2", MountPath: "/skills/b"},
+		}
+		err := validateSkills(skills)
+		if err == nil {
+			t.Fatal("expected error for duplicate skill names")
+		}
+		if !strings.Contains(err.Error(), "duplicate skill name") {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("duplicate mountPath rejected", func(t *testing.T) {
+		skills := []agentv1alpha1.SkillImageRef{
+			{Name: "skill-a", Image: "img:v1", MountPath: "/agent/skills/shared"},
+			{Name: "skill-b", Image: "img:v2", MountPath: "/agent/skills/shared"},
+		}
+		err := validateSkills(skills)
+		if err == nil {
+			t.Fatal("expected error for duplicate mountPath")
+		}
+		if !strings.Contains(err.Error(), "duplicate mountPath") {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("path traversal rejected", func(t *testing.T) {
+		skills := []agentv1alpha1.SkillImageRef{
+			{Name: "evil", Image: "img:v1", MountPath: "/agent/skills/../../etc/passwd"},
+		}
+		err := validateSkills(skills)
+		if err == nil {
+			t.Fatal("expected error for path traversal")
+		}
+		if !strings.Contains(err.Error(), "path traversal") {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("protected path rejected", func(t *testing.T) {
+		for _, path := range []string{"/proc/self", "/sys/fs", "/dev/null", "/var/run/secrets/kubernetes.io/serviceaccount"} {
+			skills := []agentv1alpha1.SkillImageRef{
+				{Name: "bad-mount", Image: "img:v1", MountPath: path},
+			}
+			err := validateSkills(skills)
+			if err == nil {
+				t.Fatalf("expected error for protected path %q", path)
+			}
+			if !strings.Contains(err.Error(), "protected path") {
+				t.Errorf("unexpected error message for %q: %v", path, err)
+			}
+		}
+	})
+}
+
+func TestValidateSkills_CreateIntegration(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("create with valid skills succeeds", func(t *testing.T) {
+		v := &AgentRuntimeValidator{}
+		rt := validAgentRuntime()
+		rt.Spec.Skills = []agentv1alpha1.SkillImageRef{
+			{Name: "s1", Image: "img:v1", MountPath: "/skills/s1"},
+		}
+		_, err := v.ValidateCreate(ctx, rt)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("create with duplicate skills rejected", func(t *testing.T) {
+		v := &AgentRuntimeValidator{}
+		rt := validAgentRuntime()
+		rt.Spec.Skills = []agentv1alpha1.SkillImageRef{
+			{Name: "s1", Image: "img:v1", MountPath: "/skills/a"},
+			{Name: "s1", Image: "img:v2", MountPath: "/skills/b"},
+		}
+		_, err := v.ValidateCreate(ctx, rt)
+		if err == nil {
+			t.Fatal("expected error for duplicate skill names")
+		}
+	})
+
+	t.Run("create with duplicate mountPath rejected", func(t *testing.T) {
+		v := &AgentRuntimeValidator{}
+		rt := validAgentRuntime()
+		rt.Spec.Skills = []agentv1alpha1.SkillImageRef{
+			{Name: "s1", Image: "img:v1", MountPath: "/skills/shared"},
+			{Name: "s2", Image: "img:v2", MountPath: "/skills/shared"},
+		}
+		_, err := v.ValidateCreate(ctx, rt)
+		if err == nil {
+			t.Fatal("expected error for duplicate mountPath")
+		}
+	})
+
+	t.Run("update with duplicate skills rejected", func(t *testing.T) {
+		v := &AgentRuntimeValidator{}
+		old := validAgentRuntime()
+		updated := validAgentRuntime()
+		updated.Spec.Skills = []agentv1alpha1.SkillImageRef{
+			{Name: "s1", Image: "img:v1", MountPath: "/skills/a"},
+			{Name: "s1", Image: "img:v2", MountPath: "/skills/b"},
+		}
+		_, err := v.ValidateUpdate(ctx, old, updated)
+		if err == nil {
+			t.Fatal("expected error for duplicate skill names on update")
+		}
+	})
+}

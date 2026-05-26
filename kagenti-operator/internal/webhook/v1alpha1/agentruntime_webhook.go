@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -52,6 +53,9 @@ func (v *AgentRuntimeValidator) ValidateCreate(ctx context.Context, rt *agentv1a
 	if err := checkMTLSCompatibleWithMode(rt); err != nil {
 		return nil, err
 	}
+	if err := validateSkills(rt.Spec.Skills); err != nil {
+		return nil, err
+	}
 
 	return nil, nil
 }
@@ -63,6 +67,9 @@ func (v *AgentRuntimeValidator) ValidateUpdate(ctx context.Context, _ *agentv1al
 		return nil, err
 	}
 	if err := checkMTLSCompatibleWithMode(rt); err != nil {
+		return nil, err
+	}
+	if err := validateSkills(rt.Spec.Skills); err != nil {
 		return nil, err
 	}
 
@@ -132,5 +139,37 @@ func (v *AgentRuntimeValidator) checkDuplicateTargetRef(ctx context.Context, rt 
 		}
 	}
 
+	return nil
+}
+
+var deniedMountPrefixes = []string{"/proc", "/sys", "/dev", "/var/run/secrets"}
+
+func validateSkills(skills []agentv1alpha1.SkillImageRef) error {
+	if len(skills) == 0 {
+		return nil
+	}
+
+	seenNames := make(map[string]bool, len(skills))
+	seenPaths := make(map[string]bool, len(skills))
+	for i, skill := range skills {
+		if seenNames[skill.Name] {
+			return fmt.Errorf("spec.skills[%d]: duplicate skill name %q", i, skill.Name)
+		}
+		seenNames[skill.Name] = true
+
+		if seenPaths[skill.MountPath] {
+			return fmt.Errorf("spec.skills[%d]: duplicate mountPath %q", i, skill.MountPath)
+		}
+		seenPaths[skill.MountPath] = true
+
+		if strings.Contains(skill.MountPath, "..") {
+			return fmt.Errorf("spec.skills[%d]: mountPath %q must not contain path traversal (..)", i, skill.MountPath)
+		}
+		for _, prefix := range deniedMountPrefixes {
+			if strings.HasPrefix(skill.MountPath, prefix) {
+				return fmt.Errorf("spec.skills[%d]: mountPath %q overlaps protected path %q", i, skill.MountPath, prefix)
+			}
+		}
+	}
 	return nil
 }

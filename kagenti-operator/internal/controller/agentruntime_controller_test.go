@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
+	webhookconfig "github.com/kagenti/operator/internal/webhook/config"
 )
 
 type stubCardFetcher struct {
@@ -155,6 +156,99 @@ var _ = Describe("AgentRuntime Controller", func() {
 			Expect(updatedDep.Spec.Template.Labels[LabelAgentType]).To(Equal("agent"))
 			Expect(updatedDep.Spec.Template.Annotations).To(HaveKey(AnnotationConfigHash))
 			Expect(updatedDep.Spec.Template.Annotations[AnnotationConfigHash]).NotTo(BeEmpty())
+		})
+	})
+
+	Context("When skills annotation is set on workload metadata", func() {
+		It("should set kagenti.io/skills when feature gate is enabled", func() {
+			dep := newDeployment("skills-anno-deploy", namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+
+			rt := newAgentRuntime("skills-anno-rt", namespace, "skills-anno-deploy", agentv1alpha1.RuntimeTypeAgent)
+			rt.Spec.Skills = []agentv1alpha1.SkillImageRef{
+				{Name: "weather-forecast", Image: "ghcr.io/example/weather:v1", MountPath: "/agent/skills/weather-forecast"},
+				{Name: "resume-reviewer", Image: "ghcr.io/example/resume:v1", MountPath: "/agent/skills/resume-reviewer"},
+			}
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			r := newReconciler()
+			r.GetFeatureGates = func() *webhookconfig.FeatureGates {
+				return &webhookconfig.FeatureGates{SkillImageVolumes: true}
+			}
+			nn := types.NamespacedName{Name: "skills-anno-rt", Namespace: namespace}
+
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			updatedDep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "skills-anno-deploy", Namespace: namespace}, updatedDep)).To(Succeed())
+
+			Expect(updatedDep.Annotations).To(HaveKey(AnnotationSkills))
+			Expect(updatedDep.Annotations[AnnotationSkills]).To(Equal(`["weather-forecast","resume-reviewer"]`))
+		})
+
+		It("should not set kagenti.io/skills when feature gate is disabled", func() {
+			dep := newDeployment("skills-anno-off-deploy", namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+
+			rt := newAgentRuntime("skills-anno-off-rt", namespace, "skills-anno-off-deploy", agentv1alpha1.RuntimeTypeAgent)
+			rt.Spec.Skills = []agentv1alpha1.SkillImageRef{
+				{Name: "weather-forecast", Image: "ghcr.io/example/weather:v1", MountPath: "/agent/skills/weather-forecast"},
+			}
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			r := newReconciler()
+			nn := types.NamespacedName{Name: "skills-anno-off-rt", Namespace: namespace}
+
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			updatedDep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "skills-anno-off-deploy", Namespace: namespace}, updatedDep)).To(Succeed())
+
+			Expect(updatedDep.Annotations).NotTo(HaveKey(AnnotationSkills))
+		})
+
+		It("should remove kagenti.io/skills on deletion", func() {
+			dep := newDeployment("skills-anno-del-deploy", namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+
+			rt := newAgentRuntime("skills-anno-del-rt", namespace, "skills-anno-del-deploy", agentv1alpha1.RuntimeTypeAgent)
+			rt.Spec.Skills = []agentv1alpha1.SkillImageRef{
+				{Name: "weather-forecast", Image: "ghcr.io/example/weather:v1", MountPath: "/agent/skills/weather-forecast"},
+			}
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+
+			r := newReconciler()
+			r.GetFeatureGates = func() *webhookconfig.FeatureGates {
+				return &webhookconfig.FeatureGates{SkillImageVolumes: true}
+			}
+			nn := types.NamespacedName{Name: "skills-anno-del-rt", Namespace: namespace}
+
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+
+			// Verify annotation is present
+			depBefore := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "skills-anno-del-deploy", Namespace: namespace}, depBefore)).To(Succeed())
+			Expect(depBefore.Annotations).To(HaveKey(AnnotationSkills))
+
+			// Delete AgentRuntime
+			Expect(k8sClient.Delete(ctx, rt)).To(Succeed())
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify annotation is removed
+			depAfter := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "skills-anno-del-deploy", Namespace: namespace}, depAfter)).To(Succeed())
+			Expect(depAfter.Annotations).NotTo(HaveKey(AnnotationSkills))
 		})
 	})
 

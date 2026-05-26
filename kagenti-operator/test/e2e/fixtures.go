@@ -1370,3 +1370,148 @@ spec:
       kagenti-enabled: "true"
 `
 }
+
+// --- Skill Image Volumes E2E fixtures ---
+
+const skillTestNamespace = "e2e-skills-test"
+
+func skillTargetDeploymentFixture() string {
+	return `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skill-agent-target
+  namespace: ` + skillTestNamespace + `
+  labels:
+    app.kubernetes.io/name: skill-agent-target
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skill-agent-target
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: skill-agent-target
+        kagenti.io/inject: disabled
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+`
+}
+
+func skillAgentRuntimeFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: skill-agent-runtime
+  namespace: ` + skillTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: skill-agent-target
+  skills:
+    - name: resume-reviewer
+      image: registry.k8s.io/pause:3.9
+      mountPath: /agent/skills/resume-reviewer
+    - name: blog-writer
+      image: registry.k8s.io/pause:3.10
+      mountPath: /agent/skills/blog-writer
+      pullPolicy: Always
+`
+}
+
+func skillAgentRuntimeUpdatedFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: skill-agent-runtime
+  namespace: ` + skillTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: skill-agent-target
+  skills:
+    - name: resume-reviewer
+      image: registry.k8s.io/pause:3.10
+      mountPath: /agent/skills/resume-reviewer
+    - name: blog-writer
+      image: registry.k8s.io/pause:3.10
+      mountPath: /agent/skills/blog-writer
+      pullPolicy: Always
+`
+}
+
+func skillAgentRuntimeNoSkillsFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: skill-agent-runtime
+  namespace: ` + skillTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: skill-agent-target
+`
+}
+
+func skillDuplicateNamesAgentRuntimeFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: skill-duplicate-runtime
+  namespace: ` + skillTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: skill-agent-target
+  skills:
+    - name: my-skill
+      image: registry.k8s.io/pause:3.9
+      mountPath: /agent/skills/my-skill
+    - name: my-skill
+      image: registry.k8s.io/pause:3.10
+      mountPath: /agent/skills/my-skill-2
+`
+}
+
+func skillDuplicateMountPathAgentRuntimeFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: skill-dup-mount-runtime
+  namespace: ` + skillTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: skill-agent-target
+  skills:
+    - name: skill-a
+      image: registry.k8s.io/pause:3.9
+      mountPath: /agent/skills/shared
+    - name: skill-b
+      image: registry.k8s.io/pause:3.10
+      mountPath: /agent/skills/shared
+`
+}

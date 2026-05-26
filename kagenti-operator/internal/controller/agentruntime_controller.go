@@ -49,6 +49,7 @@ import (
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"github.com/kagenti/operator/internal/agentcard"
 	"github.com/kagenti/operator/internal/signature"
+	webhookconfig "github.com/kagenti/operator/internal/webhook/config"
 )
 
 const (
@@ -56,6 +57,10 @@ const (
 
 	// AnnotationConfigHash is the annotation applied to PodTemplateSpec to trigger rolling updates.
 	AnnotationConfigHash = "kagenti.io/config-hash"
+
+	// AnnotationSkills is the annotation applied to workload metadata to advertise
+	// which skill images are mounted. Value is a JSON array of skill names.
+	AnnotationSkills = "kagenti.io/skills"
 
 	// AnnotationRestartPending marks a Sandbox that was scaled to 0 and needs
 	// to be scaled back to 1 on the next reconcile cycle. Two-phase restart
@@ -97,6 +102,14 @@ type AgentRuntimeReconciler struct {
 	SignatureProvider    signature.Provider
 	EnableCardDiscovery  bool
 	SpireTrustDomain     string
+	GetFeatureGates      func() *webhookconfig.FeatureGates
+}
+
+func (r *AgentRuntimeReconciler) getFeatureGates() *webhookconfig.FeatureGates {
+	if r.GetFeatureGates != nil {
+		return r.GetFeatureGates()
+	}
+	return webhookconfig.DefaultFeatureGates()
 }
 
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agentruntimes,verbs=get;list;watch;create;update;patch;delete
@@ -210,6 +223,31 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	// 6.5. Set SkillsMounted condition based on skills and feature gate state
+	if len(rt.Spec.Skills) > 0 {
+		fg := r.getFeatureGates()
+		if !fg.SkillImageVolumes {
+			r.setCondition(rt, ConditionTypeSkillsMounted, metav1.ConditionFalse, "FeatureGateDisabled",
+				"Skills defined but skillImageVolumes feature gate is disabled")
+			if r.Recorder != nil {
+				r.Recorder.Event(rt, corev1.EventTypeWarning, "SkillsNotMounted",
+					"skillImageVolumes feature gate is disabled; enable it to mount OCI skill images")
+			}
+		} else if rt.Spec.TargetRef.Kind == KindSandbox {
+			r.setCondition(rt, ConditionTypeSkillsMounted, metav1.ConditionFalse, "UnsupportedWorkloadKind",
+				"Sandbox workloads do not support skill ImageVolumes")
+			if r.Recorder != nil {
+				r.Recorder.Event(rt, corev1.EventTypeWarning, "SkillsNotMounted",
+					"Sandbox workloads do not support skill ImageVolumes")
+			}
+		} else {
+			r.setCondition(rt, ConditionTypeSkillsMounted, metav1.ConditionTrue, "SkillsApplied",
+				fmt.Sprintf("%d skill image(s) mounted", len(rt.Spec.Skills)))
+		}
+	} else {
+		meta.RemoveStatusCondition(&rt.Status.Conditions, ConditionTypeSkillsMounted)
+	}
+
 	// 7. Count configured pods
 	configuredPods, err := r.countConfiguredPods(ctx, rt)
 	if err != nil {
@@ -305,6 +343,27 @@ func (r *AgentRuntimeReconciler) applyWorkloadConfig(ctx context.Context, rt *ag
 		workloadLabels[LabelManagedBy] = LabelManagedByValue
 		acc.obj.SetLabels(workloadLabels)
 
+		// Advertise mounted skills on workload metadata
+		workloadAnnotations := acc.obj.GetAnnotations()
+		if workloadAnnotations == nil {
+			workloadAnnotations = make(map[string]string)
+		}
+		fg := r.getFeatureGates()
+		if fg.SkillImageVolumes && len(rt.Spec.Skills) > 0 {
+			names := make([]string, 0, len(rt.Spec.Skills))
+			for _, s := range rt.Spec.Skills {
+				names = append(names, s.Name)
+			}
+			b, err := json.Marshal(names)
+			if err != nil {
+				logger.Error(err, "failed to marshal skill names")
+			}
+			workloadAnnotations[AnnotationSkills] = string(b)
+		} else {
+			delete(workloadAnnotations, AnnotationSkills)
+		}
+		acc.obj.SetAnnotations(workloadAnnotations)
+
 		// Apply labels to PodTemplateSpec
 		podLabels := acc.getPodLabels(acc.obj)
 		if podLabels == nil {
@@ -320,6 +379,13 @@ func (r *AgentRuntimeReconciler) applyWorkloadConfig(ctx context.Context, rt *ag
 		}
 		podAnnotations[AnnotationConfigHash] = configHash
 		acc.setPodAnnotations(acc.obj, podAnnotations)
+
+		// Apply skill ImageVolumes when feature gate is enabled
+		if acc.getPodSpec != nil {
+			if fg.SkillImageVolumes {
+				reconcileSkillVolumes(acc.getPodSpec(acc.obj), rt.Spec.Skills)
+			}
+		}
 
 		logger.Info("Applying config to workload",
 			"workload", ref.Name,
@@ -580,10 +646,19 @@ func (r *AgentRuntimeReconciler) handleDeletion(ctx context.Context, rt *agentv1
 			podAnnotations[AnnotationConfigHash] = defaultsHash
 			acc.setPodAnnotations(acc.obj, podAnnotations)
 
-			// Remove managed-by from workload metadata
+			// Remove managed-by label and skills annotation from workload metadata
 			workloadLabels := acc.obj.GetLabels()
 			delete(workloadLabels, LabelManagedBy)
 			acc.obj.SetLabels(workloadLabels)
+
+			workloadAnnotations := acc.obj.GetAnnotations()
+			delete(workloadAnnotations, AnnotationSkills)
+			acc.obj.SetAnnotations(workloadAnnotations)
+
+			// Remove skill volumes on deletion
+			if acc.getPodSpec != nil {
+				reconcileSkillVolumes(acc.getPodSpec(acc.obj), nil)
+			}
 
 			logger.Info("Updated workload to defaults-only config on AgentRuntime deletion",
 				"workload", ref.Name, "kind", ref.Kind)
@@ -1031,13 +1106,14 @@ func (r *AgentRuntimeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // runtimePodTemplateAccessor provides uniform access to PodTemplateSpec
-// labels and annotations across Deployment and StatefulSet.
+// labels, annotations, and PodSpec across Deployment and StatefulSet.
 type runtimePodTemplateAccessor struct {
 	obj               client.Object
 	getPodLabels      func(client.Object) map[string]string
 	setPodLabels      func(client.Object, map[string]string)
 	getPodAnnotations func(client.Object) map[string]string
 	setPodAnnotations func(client.Object, map[string]string)
+	getPodSpec        func(client.Object) *corev1.PodSpec
 }
 
 func newRuntimePodTemplateAccessor(kind string) (*runtimePodTemplateAccessor, bool) {
@@ -1057,6 +1133,9 @@ func newRuntimePodTemplateAccessor(kind string) (*runtimePodTemplateAccessor, bo
 			setPodAnnotations: func(o client.Object, a map[string]string) {
 				o.(*appsv1.Deployment).Spec.Template.Annotations = a
 			},
+			getPodSpec: func(o client.Object) *corev1.PodSpec {
+				return &o.(*appsv1.Deployment).Spec.Template.Spec
+			},
 		}, true
 	case "StatefulSet":
 		return &runtimePodTemplateAccessor{
@@ -1072,6 +1151,9 @@ func newRuntimePodTemplateAccessor(kind string) (*runtimePodTemplateAccessor, bo
 			},
 			setPodAnnotations: func(o client.Object, a map[string]string) {
 				o.(*appsv1.StatefulSet).Spec.Template.Annotations = a
+			},
+			getPodSpec: func(o client.Object) *corev1.PodSpec {
+				return &o.(*appsv1.StatefulSet).Spec.Template.Spec
 			},
 		}, true
 	case KindSandbox:

@@ -1940,3 +1940,443 @@ rules:
 		}).Should(Succeed())
 	})
 })
+
+var _ = Describe("Skill Image Volumes E2E", Ordered, func() {
+	const controllerNamespace = "kagenti-operator-system"
+	const controllerDeployment = "kagenti-operator-controller-manager"
+
+	BeforeAll(func() {
+		By("ensuring mlflow-operator ClusterRole exists for ServiceAccount informer")
+		clusterRoleCmd := exec.Command("kubectl", "apply", "-f", "-")
+		clusterRoleCmd.Stdin = strings.NewReader(`apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mlflow-operator-mlflow-integration
+rules:
+- apiGroups: [""]
+  resources: ["serviceaccounts"]
+  verbs: ["list", "watch"]
+`)
+		_, _ = utils.Run(clusterRoleCmd)
+
+		Expect(utils.DeployController(controllerNamespace, projectImage)).To(Succeed(), "Failed to deploy controller")
+
+		By("waiting for controller-manager to be ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", controllerNamespace,
+				"-o", "go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}{{ .status.phase }}{{ end }}{{ end }}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(ContainSubstring("Running"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("waiting for webhook endpoint to be ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "endpoints",
+				"kagenti-operator-webhook-service", "-n", controllerNamespace,
+				"-o", "jsonpath={.subsets[0].addresses[0].ip}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).NotTo(BeEmpty(), "webhook endpoint not yet populated")
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("creating skill test namespace")
+		cmd := exec.Command("kubectl", "create", "ns", skillTestNamespace)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", skillTestNamespace,
+			"pod-security.kubernetes.io/enforce=restricted")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("ensuring kagenti-system namespace exists")
+		cmd = exec.Command("kubectl", "create", "ns", "kagenti-system")
+		_, _ = utils.Run(cmd)
+
+		By("creating cluster defaults ConfigMap")
+		_, err = utils.KubectlApplyStdin(runtimeClusterDefaultsConfigMapFixture(), "kagenti-system")
+		Expect(err).NotTo(HaveOccurred())
+
+		By("deploying skill agent target workload")
+		_, err = utils.KubectlApplyStdin(skillTargetDeploymentFixture(), skillTestNamespace)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(utils.WaitForDeploymentReady("skill-agent-target", skillTestNamespace, 2*time.Minute)).To(Succeed())
+	})
+
+	AfterAll(func() {
+		By("deleting skill test namespace")
+		cmd := exec.Command("kubectl", "delete", "ns", skillTestNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("cleaning up cluster defaults ConfigMap")
+		cmd = exec.Command("kubectl", "delete", "configmap", "kagenti-platform-config",
+			"-n", "kagenti-system", "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("cleaning up feature-gates ConfigMap")
+		cmd = exec.Command("kubectl", "delete", "configmap", "kagenti-feature-gates",
+			"-n", controllerNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("cleaning up mlflow-operator ClusterRole")
+		cmd = exec.Command("kubectl", "delete", "clusterrole",
+			"mlflow-operator-mlflow-integration", "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		utils.UndeployController()
+	})
+
+	AfterEach(func() {
+		if CurrentSpecReport().Failed() {
+			for _, diag := range []struct {
+				label string
+				args  []string
+			}{
+				{"Controller logs", []string{
+					"logs", "-l", "control-plane=controller-manager",
+					"-n", controllerNamespace, "--tail=100",
+				}},
+				{"Events", []string{"get", "events", "-n", skillTestNamespace, "--sort-by=.lastTimestamp"}},
+				{"AgentRuntimes", []string{"get", "agentruntimes", "-n", skillTestNamespace, "-o", "yaml"}},
+				{"Deployments", []string{"get", "deployments", "-n", skillTestNamespace, "-o", "yaml"}},
+			} {
+				cmd := exec.Command("kubectl", diag.args...)
+				out, err := utils.Run(cmd)
+				if err == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "%s:\n%s\n", diag.label, out)
+				}
+			}
+		}
+	})
+
+	SetDefaultEventuallyTimeout(2 * time.Minute)
+	SetDefaultEventuallyPollingInterval(time.Second)
+
+	Context("Feature gate disabled (default)", Ordered, func() {
+		It("should set SkillsMounted=False when feature gate is disabled", func() {
+			By("creating AgentRuntime with skills (feature gate disabled)")
+			Eventually(func() error {
+				_, err := utils.KubectlApplyStdin(skillAgentRuntimeFixture(), skillTestNamespace)
+				return err
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for AgentRuntime phase=Active")
+			Eventually(func(g Gomega) {
+				phase, err := utils.KubectlGetJsonpath("agentruntime", "skill-agent-runtime",
+					skillTestNamespace, "{.status.phase}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(phase).To(Equal("Active"))
+			}).Should(Succeed())
+
+			By("verifying SkillsMounted=False with reason FeatureGateDisabled")
+			Eventually(func(g Gomega) {
+				status, err := utils.KubectlGetJsonpath("agentruntime", "skill-agent-runtime",
+					skillTestNamespace,
+					"{.status.conditions[?(@.type=='SkillsMounted')].status}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(status).To(Equal("False"))
+
+				reason, err := utils.KubectlGetJsonpath("agentruntime", "skill-agent-runtime",
+					skillTestNamespace,
+					"{.status.conditions[?(@.type=='SkillsMounted')].reason}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(reason).To(Equal("FeatureGateDisabled"))
+			}).Should(Succeed())
+
+			By("verifying NO skill volumes on Deployment spec")
+			Eventually(func(g Gomega) {
+				volumes, err := utils.KubectlGetJsonpath("deployment", "skill-agent-target",
+					skillTestNamespace,
+					"{.spec.template.spec.volumes[*].name}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(volumes).NotTo(ContainSubstring("skill-"))
+			}).Should(Succeed())
+
+			By("cleaning up AgentRuntime for next context")
+			cmd := exec.Command("kubectl", "delete", "agentruntime", "skill-agent-runtime",
+				"-n", skillTestNamespace)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "agentruntime", "skill-agent-runtime",
+					"-n", skillTestNamespace)
+				_, err := cmd.CombinedOutput()
+				g.Expect(err).To(HaveOccurred(), "AgentRuntime should be deleted")
+			}).Should(Succeed())
+		})
+	})
+
+	Context("Feature gate enabled", Ordered, func() {
+		var initialConfigHash string
+
+		BeforeAll(func() {
+			By("enabling skillImageVolumes feature gate")
+			Expect(utils.EnableSkillImageVolumes(controllerNamespace, controllerDeployment)).To(Succeed())
+
+			By("waiting for controller to be ready after feature gate patch")
+			goTmpl := "{{ range .items }}" +
+				"{{ if not .metadata.deletionTimestamp }}" +
+				"{{ .status.phase }}{{ end }}{{ end }}"
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "control-plane=controller-manager",
+					"-n", controllerNamespace,
+					"-o", "go-template="+goTmpl)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("Running"))
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("waiting for webhook endpoint to be ready after restart")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "endpoints",
+					"kagenti-operator-webhook-service", "-n", controllerNamespace,
+					"-o", "jsonpath={.subsets[0].addresses[0].ip}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty(), "webhook endpoint not yet populated")
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
+		})
+
+		It("should mount skill ImageVolumes to target Deployment", func() {
+			By("creating AgentRuntime with 2 skills")
+			Eventually(func() error {
+				_, err := utils.KubectlApplyStdin(skillAgentRuntimeFixture(), skillTestNamespace)
+				return err
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for AgentRuntime phase=Active")
+			Eventually(func(g Gomega) {
+				phase, err := utils.KubectlGetJsonpath("agentruntime", "skill-agent-runtime",
+					skillTestNamespace, "{.status.phase}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(phase).To(Equal("Active"))
+			}).Should(Succeed())
+
+			By("verifying skill volumes on Deployment spec")
+			Eventually(func(g Gomega) {
+				volumes, err := utils.KubectlGetJsonpath("deployment", "skill-agent-target",
+					skillTestNamespace,
+					"{.spec.template.spec.volumes[*].name}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(volumes).To(ContainSubstring("skill-resume-reviewer"))
+				g.Expect(volumes).To(ContainSubstring("skill-blog-writer"))
+			}).Should(Succeed())
+
+			By("verifying skill volume image references")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deployment", "skill-agent-target",
+					"-n", skillTestNamespace,
+					"-o", "jsonpath={.spec.template.spec.volumes}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("registry.k8s.io/pause:3.9"))
+				g.Expect(output).To(ContainSubstring("registry.k8s.io/pause:3.10"))
+			}).Should(Succeed())
+
+			By("verifying skill volume mounts on agent container")
+			Eventually(func(g Gomega) {
+				mounts, err := utils.KubectlGetJsonpath("deployment", "skill-agent-target",
+					skillTestNamespace,
+					"{.spec.template.spec.containers[0].volumeMounts[*].name}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(mounts).To(ContainSubstring("skill-resume-reviewer"))
+				g.Expect(mounts).To(ContainSubstring("skill-blog-writer"))
+			}).Should(Succeed())
+
+			By("verifying skill mount paths")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deployment", "skill-agent-target",
+					"-n", skillTestNamespace,
+					"-o", "jsonpath={.spec.template.spec.containers[0].volumeMounts}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("/agent/skills/resume-reviewer"))
+				g.Expect(output).To(ContainSubstring("/agent/skills/blog-writer"))
+			}).Should(Succeed())
+
+			By("verifying SkillsMounted=True condition")
+			Eventually(func(g Gomega) {
+				status, err := utils.KubectlGetJsonpath("agentruntime", "skill-agent-runtime",
+					skillTestNamespace,
+					"{.status.conditions[?(@.type=='SkillsMounted')].status}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(status).To(Equal("True"))
+
+				reason, err := utils.KubectlGetJsonpath("agentruntime", "skill-agent-runtime",
+					skillTestNamespace,
+					"{.status.conditions[?(@.type=='SkillsMounted')].reason}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(reason).To(Equal("SkillsApplied"))
+			}).Should(Succeed())
+
+			By("verifying kagenti.io/skills annotation on Deployment metadata")
+			Eventually(func(g Gomega) {
+				ann, err := utils.KubectlGetJsonpath("deployment", "skill-agent-target",
+					skillTestNamespace,
+					"{.metadata.annotations['kagenti\\.io/skills']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(ann).To(ContainSubstring("resume-reviewer"))
+				g.Expect(ann).To(ContainSubstring("blog-writer"))
+			}).Should(Succeed())
+
+			By("recording initial config-hash")
+			Eventually(func(g Gomega) {
+				hash, err := utils.KubectlGetJsonpath("deployment", "skill-agent-target",
+					skillTestNamespace,
+					"{.spec.template.metadata.annotations['kagenti\\.io/config-hash']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(hash).To(HaveLen(64))
+				initialConfigHash = hash
+			}).Should(Succeed())
+		})
+
+		It("should update volumes when skill image changes", func() {
+			By("updating AgentRuntime with changed skill image")
+			_, err := utils.KubectlApplyStdin(skillAgentRuntimeUpdatedFixture(), skillTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying Deployment spec has new image reference")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deployment", "skill-agent-target",
+					"-n", skillTestNamespace,
+					"-o", "jsonpath={.spec.template.spec.volumes}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(ContainSubstring("registry.k8s.io/pause:3.9"))
+				g.Expect(output).To(ContainSubstring("registry.k8s.io/pause:3.10"))
+			}).Should(Succeed())
+
+			By("verifying config-hash changed")
+			Eventually(func(g Gomega) {
+				hash, err := utils.KubectlGetJsonpath("deployment", "skill-agent-target",
+					skillTestNamespace,
+					"{.spec.template.metadata.annotations['kagenti\\.io/config-hash']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(hash).To(HaveLen(64))
+				g.Expect(hash).NotTo(Equal(initialConfigHash))
+				initialConfigHash = hash
+			}).Should(Succeed())
+		})
+
+		It("should remove skill volumes when skills removed from CR", func() {
+			By("updating AgentRuntime to remove all skills")
+			_, err := utils.KubectlApplyStdin(skillAgentRuntimeNoSkillsFixture(), skillTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying no skill volumes remain on Deployment")
+			Eventually(func(g Gomega) {
+				volumes, err := utils.KubectlGetJsonpath("deployment", "skill-agent-target",
+					skillTestNamespace,
+					"{.spec.template.spec.volumes[*].name}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(volumes).NotTo(ContainSubstring("skill-"))
+			}).Should(Succeed())
+
+			By("verifying no skill mounts remain on container")
+			Eventually(func(g Gomega) {
+				mounts, err := utils.KubectlGetJsonpath("deployment", "skill-agent-target",
+					skillTestNamespace,
+					"{.spec.template.spec.containers[0].volumeMounts[*].name}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(mounts).NotTo(ContainSubstring("skill-"))
+			}).Should(Succeed())
+
+			By("verifying kagenti.io/skills annotation removed from Deployment")
+			Eventually(func(g Gomega) {
+				ann, err := utils.KubectlGetJsonpath("deployment", "skill-agent-target",
+					skillTestNamespace,
+					"{.metadata.annotations['kagenti\\.io/skills']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(ann).To(BeEmpty())
+			}).Should(Succeed())
+
+			By("verifying config-hash changed again")
+			Eventually(func(g Gomega) {
+				hash, err := utils.KubectlGetJsonpath("deployment", "skill-agent-target",
+					skillTestNamespace,
+					"{.spec.template.metadata.annotations['kagenti\\.io/config-hash']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(hash).To(HaveLen(64))
+				g.Expect(hash).NotTo(Equal(initialConfigHash))
+				initialConfigHash = hash
+			}).Should(Succeed())
+		})
+
+		It("should clean up skill volumes on AgentRuntime deletion", func() {
+			By("re-applying AgentRuntime with skills")
+			Eventually(func() error {
+				_, err := utils.KubectlApplyStdin(skillAgentRuntimeFixture(), skillTestNamespace)
+				return err
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for skill volumes to appear")
+			Eventually(func(g Gomega) {
+				volumes, err := utils.KubectlGetJsonpath("deployment", "skill-agent-target",
+					skillTestNamespace,
+					"{.spec.template.spec.volumes[*].name}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(volumes).To(ContainSubstring("skill-resume-reviewer"))
+			}).Should(Succeed())
+
+			By("deleting the AgentRuntime CR")
+			cmd := exec.Command("kubectl", "delete", "agentruntime", "skill-agent-runtime",
+				"-n", skillTestNamespace)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying AgentRuntime CR is gone")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "agentruntime", "skill-agent-runtime",
+					"-n", skillTestNamespace)
+				_, err := cmd.CombinedOutput()
+				g.Expect(err).To(HaveOccurred(), "AgentRuntime should be deleted")
+			}).Should(Succeed())
+
+			By("verifying skill volumes removed from Deployment")
+			Eventually(func(g Gomega) {
+				volumes, err := utils.KubectlGetJsonpath("deployment", "skill-agent-target",
+					skillTestNamespace,
+					"{.spec.template.spec.volumes[*].name}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(volumes).NotTo(ContainSubstring("skill-"))
+			}).Should(Succeed())
+
+			By("verifying kagenti.io/skills annotation removed after deletion")
+			Eventually(func(g Gomega) {
+				ann, err := utils.KubectlGetJsonpath("deployment", "skill-agent-target",
+					skillTestNamespace,
+					"{.metadata.annotations['kagenti\\.io/skills']}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(ann).To(BeEmpty())
+			}).Should(Succeed())
+		})
+	})
+
+	Context("Webhook validation", func() {
+		It("should reject AgentRuntime with duplicate skill names", func() {
+			By("attempting to apply AgentRuntime with duplicate skill names")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "apply", "-f", "-", "-n", skillTestNamespace)
+				cmd.Stdin = strings.NewReader(skillDuplicateNamesAgentRuntimeFixture())
+				output, err := cmd.CombinedOutput()
+				g.Expect(err).To(HaveOccurred(), "kubectl apply should fail for duplicate skill names")
+				g.Expect(string(output)).To(ContainSubstring("duplicate skill name"))
+			}, 1*time.Minute, 2*time.Second).Should(Succeed())
+		})
+
+		It("should reject AgentRuntime with duplicate skill mountPaths", func() {
+			By("attempting to apply AgentRuntime with duplicate mountPaths")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "apply", "-f", "-", "-n", skillTestNamespace)
+				cmd.Stdin = strings.NewReader(skillDuplicateMountPathAgentRuntimeFixture())
+				output, err := cmd.CombinedOutput()
+				g.Expect(err).To(HaveOccurred(), "kubectl apply should fail for duplicate mountPaths")
+				g.Expect(string(output)).To(ContainSubstring("duplicate mountPath"))
+			}, 1*time.Minute, 2*time.Second).Should(Succeed())
+		})
+	})
+})
