@@ -39,16 +39,16 @@ jobs:
             dockerfile: ./kagenti-operator/cmd/agentcard-signer/Dockerfile
     steps:
     - name: Checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
 
     - name: Set up QEMU
-      uses: docker/setup-qemu-action@v4
+      uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3  # v4
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v4
+      uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4
 
     - name: Log in to ghcr.io
-      uses: docker/login-action@v4
+      uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
@@ -56,7 +56,7 @@ jobs:
 
     - name: Extract Docker metadata
       id: meta
-      uses: docker/metadata-action@v6
+      uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6
       with:
         images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image_config.name }}
         tags: |
@@ -65,7 +65,7 @@ jobs:
           type=semver,pattern={{version}}
 
     - name: Build and push ${{ matrix.image_config.name }}
-      uses: docker/build-push-action@v7
+      uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7
       with:
         context: ${{ matrix.image_config.context }}
         file: ${{ matrix.image_config.dockerfile }}
@@ -86,18 +86,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
 
     - name: Set up Helm
-      uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+      uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5.0.0
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Install yq
-      uses: mikefarah/yq@v4
+      uses: mikefarah/yq@751d8ad57b84f1794661bc70c0afb92a22ad7b3c  # v4
 
     - name: Log in to ghcr.io
-      uses: docker/login-action@v4
+      uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
@@ -135,10 +135,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
 
     - name: Create Kind cluster
-      uses: helm/kind-action@v1
+      uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1
 
     - name: Install cert-manager
       run: |
