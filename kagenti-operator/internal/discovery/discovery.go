@@ -1,0 +1,144 @@
+package discovery
+
+// +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list
+// +kubebuilder:rbac:groups=operator.openshift.io,resources=zerotrustworkloadidentitymanagers,verbs=get;list
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+var (
+	routeGVK = schema.GroupVersionKind{
+		Group:   "route.openshift.io",
+		Version: "v1",
+		Kind:    "Route",
+	}
+	ztwimGVK = schema.GroupVersionKind{
+		Group:   "operator.openshift.io",
+		Version: "v1alpha1",
+		Kind:    "ZeroTrustWorkloadIdentityManager",
+	}
+)
+
+// DiscoverKeycloakPublicURL discovers the external Keycloak URL from cluster resources.
+// It tries OpenShift Route first, then Kubernetes Ingress.
+func DiscoverKeycloakPublicURL(ctx context.Context, c client.Reader, keycloakNamespace string) (string, error) {
+	if url, err := discoverFromRoute(ctx, c, keycloakNamespace); err == nil && url != "" {
+		return url, nil
+	}
+
+	if url, err := discoverFromIngress(ctx, c, keycloakNamespace); err == nil && url != "" {
+		return url, nil
+	}
+
+	return "", fmt.Errorf("could not discover Keycloak public URL from Route or Ingress in namespace %q", keycloakNamespace)
+}
+
+func discoverFromRoute(ctx context.Context, c client.Reader, ns string) (string, error) {
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(routeGVK)
+	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: "keycloak"}, route); err != nil {
+		return "", err
+	}
+	host, found, err := unstructured.NestedString(route.Object, "spec", "host")
+	if err != nil || !found || host == "" {
+		return "", fmt.Errorf("route keycloak in %s has no spec.host", ns)
+	}
+	return "https://" + host, nil
+}
+
+func discoverFromIngress(ctx context.Context, c client.Reader, ns string) (string, error) {
+	ingress := &networkingv1.Ingress{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: "keycloak"}, ingress); err != nil {
+		return "", err
+	}
+	if len(ingress.Spec.Rules) > 0 && ingress.Spec.Rules[0].Host != "" {
+		return "https://" + ingress.Spec.Rules[0].Host, nil
+	}
+	return "", fmt.Errorf("ingress keycloak in %s has no host rule", ns)
+}
+
+// DiscoverSPIRETrustDomain discovers the SPIRE trust domain from cluster resources.
+// It tries the ZTWIM CR first (OpenShift), then falls back to reading the spire-bundle
+// ConfigMap which contains the trust domain as a JSON key in SPIFFE bundle format.
+func DiscoverSPIRETrustDomain(ctx context.Context, c client.Reader, spireNamespace string) (string, error) {
+	if td, err := discoverFromZTWIM(ctx, c); err == nil && td != "" {
+		return td, nil
+	}
+
+	if td, err := discoverFromSpireBundle(ctx, c, spireNamespace); err == nil && td != "" {
+		return td, nil
+	}
+
+	return "", fmt.Errorf("could not discover SPIRE trust domain from ZTWIM CR or spire-bundle ConfigMap")
+}
+
+func discoverFromZTWIM(ctx context.Context, c client.Reader) (string, error) {
+	ztwim := &unstructured.Unstructured{}
+	ztwim.SetGroupVersionKind(ztwimGVK)
+	if err := c.Get(ctx, types.NamespacedName{Name: "cluster"}, ztwim); err != nil {
+		return "", err
+	}
+	td, found, err := unstructured.NestedString(ztwim.Object, "spec", "trustDomain")
+	if err != nil || !found || td == "" {
+		return "", fmt.Errorf("ZTWIM CR 'cluster' has no spec.trustDomain")
+	}
+	return td, nil
+}
+
+// discoverFromSpireBundle reads the spire-bundle ConfigMap and extracts the trust domain
+// from the SPIFFE bundle JSON format (the top-level keys are trust domains).
+func discoverFromSpireBundle(ctx context.Context, c client.Reader, ns string) (string, error) {
+	if ns == "" {
+		ns = "zero-trust-workload-identity-manager"
+	}
+
+	cm := &corev1.ConfigMap{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: "spire-bundle"}, cm); err != nil {
+		return "", err
+	}
+
+	for key, val := range cm.Data {
+		if key == "bundle.spiffe" || key == "bundle.json" {
+			td, err := extractTrustDomainFromBundle(val)
+			if err == nil && td != "" {
+				return td, nil
+			}
+		}
+	}
+
+	// Fallback: try any key that parses as SPIFFE bundle
+	for _, val := range cm.Data {
+		td, err := extractTrustDomainFromBundle(val)
+		if err == nil && td != "" {
+			return td, nil
+		}
+	}
+
+	return "", fmt.Errorf("spire-bundle ConfigMap in %s has no parseable trust domain", ns)
+}
+
+// extractTrustDomainFromBundle parses SPIFFE bundle JSON where top-level keys are trust domains.
+// Format: {"example.org": {"keys": [...]}}
+func extractTrustDomainFromBundle(raw string) (string, error) {
+	var bundle map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &bundle); err != nil {
+		return "", err
+	}
+	for domain := range bundle {
+		if domain != "" {
+			return domain, nil
+		}
+	}
+	return "", fmt.Errorf("empty bundle")
+}

@@ -152,6 +152,13 @@ rules:
 - apiGroups:
   - networking.k8s.io
   resources:
+  - ingresses
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - networking.k8s.io
+  resources:
   - networkpolicies
   verbs:
   - create
@@ -161,6 +168,13 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - operator.openshift.io
+  resources:
+  - zerotrustworkloadidentitymanagers
+  verbs:
+  - get
+  - list
 - apiGroups:
   - operator.tekton.dev
   resources:
@@ -181,3 +195,10 @@ rules:
   - list
   - update
   - watch
+- apiGroups:
+  - route.openshift.io
+  resources:
+  - routes
+  verbs:
+  - get
+  - list

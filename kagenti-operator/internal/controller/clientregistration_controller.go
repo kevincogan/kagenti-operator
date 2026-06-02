@@ -37,7 +37,9 @@ import (
 // Well-known namespace resources.
 const (
 	authbridgeConfigConfigMap = "authbridge-config"
-	keycloakAdminSecret       = "keycloak-admin-secret"
+
+	// keycloakInitialAdminSecret is the RHBK-managed secret with keys "username"/"password".
+	keycloakInitialAdminSecret = "keycloak-initial-admin"
 
 	// LabelClientRegistrationInject: when not "true", the operator registers the OAuth client and sets
 	// AnnotationKeycloakClientSecretName. Value "true" opts the workload into the legacy webhook
@@ -56,15 +58,16 @@ const (
 // never reference a missing Secret; the webhook mounts the Secret for injected sidecars that use shared-data.
 type ClientRegistrationReconciler struct {
 	client.Client
-	// APIReader reads authbridge-config from agent namespaces and keycloak-admin-secret from
-	// the operator's namespace from the API server. Those objects are not in the manager's
-	// ConfigMap cache (see cmd/main.go cache.ByObject for ConfigMap).
+	// APIReader reads authbridge-config from agent namespaces and keycloak-initial-admin
+	// from the Keycloak namespace via the API server (bypasses manager cache).
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
 
-	// OperatorNamespace is the namespace where the operator is running and where keycloak-admin-secret
-	// is located. This is dynamically detected from the operator's service account.
+	// OperatorNamespace is the namespace where the operator is running.
 	OperatorNamespace string
+
+	// KeycloakAdminSecretNamespace is where keycloak-initial-admin lives (default: "keycloak").
+	KeycloakAdminSecretNamespace string
 
 	SpireTrustDomain string
 	// KeycloakAdminTokenCache caches admin password-grant tokens by Keycloak URL and credentials to
@@ -77,6 +80,20 @@ func (r *ClientRegistrationReconciler) uncachedReader() client.Reader {
 		return r.APIReader
 	}
 	return r.Client
+}
+
+// resolveKeycloakAdminCredentials reads keycloak-initial-admin from the Keycloak namespace.
+func (r *ClientRegistrationReconciler) resolveKeycloakAdminCredentials(ctx context.Context) (string, string, error) {
+	kcNS := r.KeycloakAdminSecretNamespace
+	if kcNS == "" {
+		kcNS = "keycloak"
+	}
+
+	secret := &corev1.Secret{}
+	if err := r.uncachedReader().Get(ctx, types.NamespacedName{Namespace: kcNS, Name: keycloakInitialAdminSecret}, secret); err != nil {
+		return "", "", err
+	}
+	return string(secret.Data["username"]), string(secret.Data["password"]), nil
 }
 
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
@@ -211,21 +228,16 @@ func (r *ClientRegistrationReconciler) reconcileOne(
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	// Read keycloak-admin-secret from the operator's namespace, not from agent namespace.
-	// This prevents Keycloak admin credentials from being replicated to every agent namespace,
-	// which would be a security risk if an agent namespace is compromised.
-	adminSecret := &corev1.Secret{}
-	if err := r.uncachedReader().Get(ctx, types.NamespacedName{Namespace: r.OperatorNamespace, Name: keycloakAdminSecret}, adminSecret); err != nil {
+	adminUser, adminPass, err := r.resolveKeycloakAdminCredentials(ctx)
+	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("waiting for keycloak-admin-secret", "namespace", r.OperatorNamespace)
+			logger.Info("waiting for Keycloak admin secret")
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 		return ctrl.Result{}, err
 	}
-	adminUser := string(adminSecret.Data["KEYCLOAK_ADMIN_USERNAME"])
-	adminPass := string(adminSecret.Data["KEYCLOAK_ADMIN_PASSWORD"])
 	if adminUser == "" || adminPass == "" {
-		logger.Info("keycloak-admin-secret missing username/password keys")
+		logger.Info("Keycloak admin secret missing credentials")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 

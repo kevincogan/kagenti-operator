@@ -49,6 +49,7 @@ import (
 	"github.com/kagenti/operator/internal/agentcard"
 	"github.com/kagenti/operator/internal/bootstrap"
 	"github.com/kagenti/operator/internal/controller"
+	"github.com/kagenti/operator/internal/discovery"
 	"github.com/kagenti/operator/internal/keycloak"
 	"github.com/kagenti/operator/internal/mlflow"
 	"github.com/kagenti/operator/internal/signature"
@@ -117,6 +118,13 @@ func main() {
 	var spireTrustBundleRefreshInterval time.Duration
 	var svidExpiryGracePeriod time.Duration
 
+	var keycloakAdminSecretNamespace string
+	var keycloakRealm string
+	var keycloakPublicURL string
+	var clientAuthType string
+	var spiffeIdpAlias string
+	var enableAuthbridgeConfig bool
+
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -158,8 +166,6 @@ func main() {
 		"unix:///spiffe-workload-api/spire-agent.sock",
 		"SPIFFE Workload API socket path for verified fetch")
 
-	flag.StringVar(&spireTrustDomain, "spire-trust-domain", "",
-		"SPIRE trust domain for identity binding (e.g. 'example.org')")
 	flag.StringVar(&spireTrustBundleConfigMapName, "spire-trust-bundle-configmap", "",
 		"Name of the ConfigMap containing the SPIRE trust bundle (SPIFFE JSON format)")
 	flag.StringVar(&spireTrustBundleConfigMapNS, "spire-trust-bundle-configmap-namespace", "",
@@ -170,6 +176,17 @@ func main() {
 		"How often to re-read the trust bundle")
 	flag.DurationVar(&svidExpiryGracePeriod, "svid-expiry-grace-period", 30*time.Minute,
 		"How far before the signing SVID expires to trigger a proactive workload restart for re-signing")
+
+	flag.StringVar(&keycloakAdminSecretNamespace, "keycloak-admin-secret-namespace", "keycloak",
+		"Namespace where keycloak-initial-admin secret is located")
+	flag.StringVar(&keycloakRealm, "keycloak-realm", "kagenti",
+		"Keycloak realm for agent client registration and identity")
+	flag.StringVar(&clientAuthType, "client-auth-type", "client-secret",
+		"Default client authentication type: client-secret or federated-jwt")
+	flag.StringVar(&spiffeIdpAlias, "spiffe-idp-alias", "spire-spiffe",
+		"Keycloak SPIFFE Identity Provider alias")
+	flag.BoolVar(&enableAuthbridgeConfig, "enable-authbridge-config", true,
+		"Reconcile authbridge-config ConfigMap in namespaces labeled kagenti-enabled=true")
 
 	opts := zap.Options{
 		Development: false,
@@ -307,6 +324,37 @@ func main() {
 		os.Exit(1)
 	}
 
+	// ========================================
+	// Auto-discover keycloakPublicURL and spireTrustDomain
+	// Env vars override auto-discovery.
+	// ========================================
+	if keycloakPublicURL == "" {
+		keycloakPublicURL = os.Getenv("KAGENTI_KEYCLOAK_PUBLIC_URL")
+	}
+	if keycloakPublicURL == "" {
+		discovered, err := discovery.DiscoverKeycloakPublicURL(ctx, mgr.GetAPIReader(), keycloakAdminSecretNamespace)
+		if err != nil {
+			setupLog.Info("Keycloak public URL auto-discovery failed (will retry at reconcile time)", "error", err.Error())
+		} else {
+			keycloakPublicURL = discovered
+			setupLog.Info("Auto-discovered Keycloak public URL", "url", keycloakPublicURL)
+		}
+	}
+
+	if spireTrustDomain == "" {
+		spireTrustDomain = os.Getenv("KAGENTI_SPIRE_TRUST_DOMAIN")
+	}
+	if spireTrustDomain == "" {
+		spireNS := os.Getenv("KAGENTI_SPIRE_NAMESPACE")
+		discovered, err := discovery.DiscoverSPIRETrustDomain(ctx, mgr.GetAPIReader(), spireNS)
+		if err != nil {
+			setupLog.Info("SPIRE trust domain auto-discovery failed (will retry at reconcile time)", "error", err.Error())
+		} else {
+			spireTrustDomain = discovered
+			setupLog.Info("Auto-discovered SPIRE trust domain", "trustDomain", spireTrustDomain)
+		}
+	}
+
 	if !requireA2ASignature && !enableVerifiedFetch {
 		setupLog.Info("WARNING: Neither --require-a2a-signature nor --enable-verified-fetch is set. " +
 			"Identity binding requires at least one trust mechanism to function. " +
@@ -316,8 +364,9 @@ func main() {
 	var sigProvider signature.Provider
 	if requireA2ASignature {
 		if spireTrustDomain == "" {
-			setupLog.Error(errors.New("missing required flag"),
-				"--spire-trust-domain is required when --require-a2a-signature=true")
+			setupLog.Error(errors.New("SPIRE trust domain not available"),
+				"spireTrustDomain is required when --require-a2a-signature=true "+
+					"(set KAGENTI_SPIRE_TRUST_DOMAIN or ensure ZTWIM/spire-bundle is accessible)")
 			os.Exit(1)
 		}
 		if spireTrustBundleConfigMapName == "" || spireTrustBundleConfigMapNS == "" {
@@ -367,8 +416,9 @@ func main() {
 		} else {
 			td := spireTrustDomain
 			if td == "" {
-				setupLog.Error(errors.New("missing required flag"),
-					"--spire-trust-domain is required when --enable-verified-fetch=true")
+				setupLog.Error(errors.New("SPIRE trust domain not available"),
+					"spireTrustDomain is required when --enable-verified-fetch=true "+
+						"(set KAGENTI_SPIRE_TRUST_DOMAIN or ensure ZTWIM/spire-bundle is accessible)")
 				os.Exit(1)
 			}
 			fetcher, fetcherErr := agentcard.NewSpiffeFetcher(fetchX509Source, td)
@@ -465,15 +515,17 @@ func main() {
 
 	if enableClientRegistration {
 		operatorNS := getOperatorNamespace()
-		setupLog.Info("Client registration controller will read keycloak-admin-secret from operator namespace",
-			"namespace", operatorNS)
+		setupLog.Info("Client registration controller enabled",
+			"keycloakAdminSecretNamespace", keycloakAdminSecretNamespace,
+			"operatorNamespace", operatorNS)
 		if err = (&controller.ClientRegistrationReconciler{
-			Client:                  mgr.GetClient(),
-			APIReader:               mgr.GetAPIReader(),
-			Scheme:                  mgr.GetScheme(),
-			OperatorNamespace:       operatorNS,
-			SpireTrustDomain:        spireTrustDomain,
-			KeycloakAdminTokenCache: &keycloak.CachedAdminTokenProvider{},
+			Client:                       mgr.GetClient(),
+			APIReader:                    mgr.GetAPIReader(),
+			Scheme:                       mgr.GetScheme(),
+			OperatorNamespace:            operatorNS,
+			KeycloakAdminSecretNamespace: keycloakAdminSecretNamespace,
+			SpireTrustDomain:             spireTrustDomain,
+			KeycloakAdminTokenCache:      &keycloak.CachedAdminTokenProvider{},
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "ClientRegistration")
 			os.Exit(1)
@@ -547,6 +599,24 @@ func main() {
 			os.Exit(1)
 		}
 		setupLog.Info("OTel collector bootstrap enabled")
+	}
+
+	if enableAuthbridgeConfig {
+		if err = (&controller.AuthbridgeConfigReconciler{
+			Client: mgr.GetClient(),
+			Platform: controller.AuthbridgeConfigPlatform{
+				KeycloakAdminSecretNamespace: keycloakAdminSecretNamespace,
+				KeycloakRealm:                keycloakRealm,
+				KeycloakPublicURL:            keycloakPublicURL,
+				SpireTrustDomain:             spireTrustDomain,
+				ClientAuthType:               clientAuthType,
+				SpiffeIdpAlias:               spiffeIdpAlias,
+			},
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "AuthbridgeConfig")
+			os.Exit(1)
+		}
+		setupLog.Info("authbridge-config reconciler enabled")
 	}
 
 	if metricsCertWatcher != nil {

@@ -40,9 +40,6 @@ spec:
             {{- if .Values.verifiedFetch.enabled }}
             - "--enable-verified-fetch=true"
             - "--verified-fetch-spiffe-socket={{ .Values.verifiedFetch.spiffeEndpointSocket }}"
-            {{- if and .Values.verifiedFetch.spireTrustDomain (not .Values.signatureVerification.enabled) }}
-            - "--spire-trust-domain={{ .Values.verifiedFetch.spireTrustDomain }}"
-            {{- end }}
             {{- end }}
             {{- if or .Values.enforceNetworkPolicies .Values.signatureVerification.enforceNetworkPolicies }}
             - "--enforce-network-policies=true"
@@ -54,9 +51,6 @@ spec:
             {{- end }}
             {{- if .Values.signatureVerification.enforceNetworkPolicies }}
             - "--enforce-network-policies=true"
-            {{- end }}
-            {{- if .Values.signatureVerification.spireTrustDomain }}
-            - "--spire-trust-domain={{ .Values.signatureVerification.spireTrustDomain }}"
             {{- end }}
             {{- if .Values.signatureVerification.spireTrustBundle.configMapName }}
             - "--spire-trust-bundle-configmap={{ .Values.signatureVerification.spireTrustBundle.configMapName }}"
@@ -74,30 +68,35 @@ spec:
             - "--svid-expiry-grace-period={{ .Values.signatureVerification.svidExpiryGracePeriod }}"
             {{- end }}
             {{- end }}
-            {{/*
-              --spire-trust-domain is rendered independently of
-              signatureVerification.enabled. The flag is also consumed by the
-              ClientRegistrationReconciler, which resolves SPIFFE client IDs of
-              the form spiffe://<trust-domain>/ns/<ns>/sa/<sa> when
-              authbridge-config has SPIRE_ENABLED=true. Gating it on signature
-              verification would break operator-managed client registration in
-              clusters that use SPIRE for workload identity but do not enable
-              A2A signature enforcement.
-            */}}
-            {{- if .Values.signatureVerification.spireTrustDomain }}
-            - "--spire-trust-domain={{ .Values.signatureVerification.spireTrustDomain }}"
+            {{- if .Values.keycloak }}
+            - "--keycloak-admin-secret-namespace={{ .Values.keycloak.adminSecretNamespace | default "keycloak" }}"
+            - "--keycloak-realm={{ .Values.keycloak.realm | default "kagenti" }}"
+            {{- end }}
+            {{- if .Values.authbridgeConfig }}
+            {{- if not .Values.authbridgeConfig.enabled }}
+            - "--enable-authbridge-config=false"
+            {{- end }}
+            {{- if .Values.authbridgeConfig.clientAuthType }}
+            - "--client-auth-type={{ .Values.authbridgeConfig.clientAuthType }}"
+            {{- end }}
             {{- end }}
           command:
             - {{ .Values.controllerManager.container.cmd }}
           image: {{ .Values.controllerManager.container.image.repository }}:{{ .Values.controllerManager.container.image.tag }}
           imagePullPolicy: {{ .Values.controllerManager.container.image.pullPolicy | default "IfNotPresent" }}
           env:
-            # POD_NAMESPACE is used by the client registration controller to locate
-            # keycloak-admin-secret in the operator's namespace
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- if and .Values.keycloak .Values.keycloak.publicUrl }}
+            - name: KAGENTI_KEYCLOAK_PUBLIC_URL
+              value: {{ .Values.keycloak.publicUrl | quote }}
+            {{- end }}
+            {{- if and .Values.signatureVerification .Values.signatureVerification.spireTrustDomain }}
+            - name: KAGENTI_SPIRE_TRUST_DOMAIN
+              value: {{ .Values.signatureVerification.spireTrustDomain | quote }}
+            {{- end }}
             {{- if .Values.controllerManager.container.env }}
             {{- range $key, $value := .Values.controllerManager.container.env }}
             - name: {{ $key }}

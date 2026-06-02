@@ -26,6 +26,7 @@ import (
 const (
 	clientRegistrationTestNamespace      = "test-ns"
 	clientRegistrationTestOperatorNS     = "operator-ns"
+	clientRegistrationTestKeycloakNS     = "keycloak"
 	clientRegistrationTestDeploymentName = "my-dep"
 )
 
@@ -198,19 +199,15 @@ func authbridgeConfigMapForTest(ns, keycloakURL string) *corev1.ConfigMap {
 	}
 }
 
-// keycloakAdminSecretForTest creates a test keycloak-admin-secret.
-// The secret should be created in the operator namespace (clientRegistrationTestOperatorNS),
-// NOT in agent namespaces. This matches the production behavior where admin credentials
-// are restricted to the operator namespace for security.
 func keycloakAdminSecretForTest(ns string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
-			Name:      keycloakAdminSecret,
+			Name:      keycloakInitialAdminSecret,
 		},
 		Data: map[string][]byte{
-			"KEYCLOAK_ADMIN_USERNAME": []byte("admin"),
-			"KEYCLOAK_ADMIN_PASSWORD": []byte("secret"),
+			"username": []byte("admin"),
+			"password": []byte("secret"),
 		},
 	}
 }
@@ -314,13 +311,11 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 			wantRequeue: requeue,
 		},
 		{
-			name: "missing keycloak admin secret in operator namespace waits with requeue",
+			name: "missing keycloak-initial-admin secret waits with requeue",
 			objs: []client.Object{
 				clusterFeatureGatesConfigMap(true),
 				testDeploymentForClientReg(),
 				authbridgeConfigMapForTest(clientRegistrationTestNamespace, "https://keycloak.example"),
-				// Note: keycloak-admin-secret intentionally NOT created in operator namespace
-				// to test the missing secret path
 			},
 			wantRequeue: requeue,
 		},
@@ -331,9 +326,10 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 			scheme := clientRegistrationTestScheme(t)
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.objs...).Build()
 			r := &ClientRegistrationReconciler{
-				Client:            c,
-				Scheme:            scheme,
-				OperatorNamespace: clientRegistrationTestOperatorNS,
+				Client:                       c,
+				Scheme:                       scheme,
+				OperatorNamespace:            clientRegistrationTestOperatorNS,
+				KeycloakAdminSecretNamespace: clientRegistrationTestKeycloakNS,
 			}
 			res, err := r.Reconcile(ctx, req)
 			if err != nil {
@@ -362,13 +358,13 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 			clusterFeatureGatesConfigMap(true),
 			dep,
 			authbridgeConfigMapForTest(clientRegistrationTestNamespace, srv.URL),
-			// keycloak-admin-secret created in OPERATOR namespace (not agent namespace)
-			keycloakAdminSecretForTest(clientRegistrationTestOperatorNS),
+			keycloakAdminSecretForTest(clientRegistrationTestKeycloakNS),
 		).Build()
 		r := &ClientRegistrationReconciler{
-			Client:            c,
-			Scheme:            scheme,
-			OperatorNamespace: clientRegistrationTestOperatorNS,
+			Client:                       c,
+			Scheme:                       scheme,
+			OperatorNamespace:            clientRegistrationTestOperatorNS,
+			KeycloakAdminSecretNamespace: clientRegistrationTestKeycloakNS,
 		}
 		res, err := r.Reconcile(ctx, req)
 		if err != nil || res != (ctrl.Result{}) {
@@ -425,16 +421,14 @@ func TestClientRegistration_EndToEnd_CredentialsAuthenticate(t *testing.T) {
 		clusterFeatureGatesConfigMap(true),
 		dep,
 		authbridgeConfigMapForTest(clientRegistrationTestNamespace, idp.URL()),
-		// keycloak-admin-secret lives in the operator namespace (not the
-		// agent namespace) after PR #321's security hardening. The
-		// reconciler reads it from there via OperatorNamespace.
-		keycloakAdminSecretForTest(clientRegistrationTestOperatorNS),
+		keycloakAdminSecretForTest(clientRegistrationTestKeycloakNS),
 	).Build()
 
 	r := &ClientRegistrationReconciler{
-		Client:            c,
-		Scheme:            scheme,
-		OperatorNamespace: clientRegistrationTestOperatorNS,
+		Client:                       c,
+		Scheme:                       scheme,
+		OperatorNamespace:            clientRegistrationTestOperatorNS,
+		KeycloakAdminSecretNamespace: clientRegistrationTestKeycloakNS,
 	}
 	res, err := r.Reconcile(ctx, req)
 	if err != nil || res != (ctrl.Result{}) {

@@ -92,6 +92,22 @@ networkPolicy:
 # Works with both verifiedFetch (mTLS) and signatureVerification (init-signer).
 enforceNetworkPolicies: false
 
+# [KEYCLOAK]: Keycloak integration settings
+keycloak:
+  # Namespace where the keycloak-initial-admin secret is located
+  adminSecretNamespace: keycloak
+  # Target realm for agent client registration
+  realm: kagenti
+  # External Keycloak URL (used for ISSUER / EXPECTED_AUDIENCE in authbridge-config).
+  # Auto-discovered from OpenShift Route or Kubernetes Ingress named "keycloak" in
+  # the adminSecretNamespace. Set here only to override auto-discovery.
+  publicUrl: ""
+
+# [AUTHBRIDGE CONFIG]: Reconcile authbridge-config ConfigMap in agent namespaces
+authbridgeConfig:
+  enabled: true
+  clientAuthType: "client-secret"
+
 # [MLFLOW]: MLflow experiment tracking integration
 mlflow:
   enable: false
@@ -112,8 +128,6 @@ verifiedFetch:
   spiffeEndpointSocket: "unix:///spiffe-workload-api/spire-agent.sock"
   # Agents must expose a Service port named "agent-tls" (default 8443).
   # The operator discovers the TLS endpoint by port name, not number.
-  # SPIRE trust domain for identity binding (required when enabled)
-  spireTrustDomain: ""
 
 # [SIGNATURE VERIFICATION]: A2A agent card signature verification via SPIRE x5c
 signatureVerification:
@@ -123,12 +137,9 @@ signatureVerification:
   auditMode: false
   # Enforce network policies based on signature verification
   enforceNetworkPolicies: false
-  # SPIRE trust domain. Required when SPIRE is enabled in the cluster even if
-  # signatureVerification.enabled is false: the ClientRegistrationReconciler
-  # uses this to build SPIFFE-shaped Keycloak client IDs
-  # (spiffe://<trust-domain>/ns/<ns>/sa/<sa>) whenever authbridge-config has
-  # SPIRE_ENABLED=true. The chart renders --spire-trust-domain independently of
-  # signatureVerification.enabled for this reason.
+  # SPIRE trust domain. Auto-discovered from ZTWIM CR or spire-bundle ConfigMap.
+  # Set here only to override auto-discovery. Used by ClientRegistrationReconciler
+  # to build SPIFFE-shaped Keycloak client IDs (spiffe://<trust-domain>/ns/<ns>/sa/<sa>).
   spireTrustDomain: ""
   # Key within the SPIRE trust bundle ConfigMap. Matches the SPIRE hardened Helm chart default
   # and the binary flag default. Override to "bundle.crt" only for older ZTWIM deployments.
