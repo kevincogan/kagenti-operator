@@ -401,9 +401,44 @@ func buildArgsPatch(argsJSON []byte) string {
 	return fmt.Sprintf(patchTmpl, string(argsJSON))
 }
 
-// PatchControllerArgs patches controller deployment args with additional flags
-// and returns the original args for later restoration.
-func PatchControllerArgs(namespace, deploy string, addArgs []string) (origArgs []string, err error) {
+func buildDeploymentPatch(args []string, envVars map[string]string) (string, string) {
+	if len(envVars) == 0 {
+		argsJSON, _ := json.Marshal(args)
+		return buildArgsPatch(argsJSON), "json"
+	}
+	type envEntry struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	type container struct {
+		Name string     `json:"name"`
+		Args []string   `json:"args"`
+		Env  []envEntry `json:"env"`
+	}
+	envList := make([]envEntry, 0, len(envVars))
+	for k, v := range envVars {
+		envList = append(envList, envEntry{Name: k, Value: v})
+	}
+	p := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"template": map[string]interface{}{
+				"spec": map[string]interface{}{
+					"containers": []container{
+						{Name: "manager", Args: args, Env: envList},
+					},
+				},
+			},
+		},
+	}
+	out, _ := json.Marshal(p)
+	return string(out), "strategic"
+}
+
+// PatchControllerArgs patches controller deployment args (and optional env vars)
+// in a single update and returns the original args for later restoration.
+func PatchControllerArgs(namespace, deploy string, addArgs []string,
+	envVars map[string]string,
+) (origArgs []string, err error) {
 	By("getting current controller args")
 	cmd := exec.Command("kubectl", "get", "deployment", deploy,
 		"-n", namespace,
@@ -425,18 +460,16 @@ func PatchControllerArgs(namespace, deploy string, addArgs []string) (origArgs [
 	newArgs := make([]string, len(origArgs), len(origArgs)+len(addArgs))
 	copy(newArgs, origArgs)
 	newArgs = append(newArgs, addArgs...)
-	argsJSON, jsonErr := json.Marshal(newArgs)
-	if jsonErr != nil {
-		return origArgs, fmt.Errorf("failed to marshal new args: %w", jsonErr)
-	}
-	patchJSON := buildArgsPatch(argsJSON)
+
+	patchJSON, patchType := buildDeploymentPatch(newArgs, envVars)
+
 	cmd = exec.Command("kubectl", "patch", "deployment", deploy,
 		"-n", namespace,
-		"--type=json",
+		"--type="+patchType,
 		fmt.Sprintf("-p=%s", patchJSON),
 	)
 	if _, patchErr := Run(cmd); patchErr != nil {
-		return origArgs, fmt.Errorf("failed to patch args: %w", patchErr)
+		return origArgs, fmt.Errorf("failed to patch deployment: %w", patchErr)
 	}
 
 	By("waiting for controller rollout after patch")

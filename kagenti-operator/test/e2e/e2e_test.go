@@ -844,21 +844,16 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 		var origArgs []string
 
 		BeforeAll(func() {
-			By("patching controller with signature verification flags")
+			By("patching controller with signature verification flags and trust domain")
 			var err error
 			origArgs, err = utils.PatchControllerArgs(controllerNamespace, controllerDeployment, []string{
 				"--require-a2a-signature=true",
 				"--spire-trust-bundle-configmap=spire-bundle",
 				"--spire-trust-bundle-configmap-namespace=spire-system",
+			}, map[string]string{
+				"KAGENTI_SPIRE_TRUST_DOMAIN": "example.org",
 			})
 			Expect(err).NotTo(HaveOccurred())
-
-			By("setting KAGENTI_SPIRE_TRUST_DOMAIN env var")
-			cmd := exec.Command("kubectl", "set", "env", "deployment/"+controllerDeployment,
-				"-n", controllerNamespace, "KAGENTI_SPIRE_TRUST_DOMAIN=example.org")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(utils.WaitForRollout(controllerDeployment, controllerNamespace, 2*time.Minute)).To(Succeed())
 		})
 
 		AfterAll(func() {
@@ -891,7 +886,7 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 				var err error
 				auditOrigArgs, err = utils.PatchControllerArgs(controllerNamespace, controllerDeployment, []string{
 					"--signature-audit-mode=true",
-				})
+				}, nil)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
