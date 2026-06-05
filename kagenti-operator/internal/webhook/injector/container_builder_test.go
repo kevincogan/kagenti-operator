@@ -285,8 +285,8 @@ func TestBuildProxyInitContainer_WithBothExcludes(t *testing.T) {
 }
 
 // The proxy-sidecar container must run as the configured Proxy.UID — the same
-// value the enforce-drop guard exempts via --uid-owner. If these drift, the
-// proxy's own egress would be dropped (or the agent would share the exempt UID).
+// value the enforce-redirect guard exempts via --uid-owner. If these drift, the
+// proxy's own egress would be redirected back (or the agent would share the exempt UID).
 func TestBuildProxySidecarContainer_RunAsProxyUID(t *testing.T) {
 	cfg := config.CompiledDefaults()
 	builder := NewContainerBuilder(cfg)
@@ -301,37 +301,6 @@ func TestBuildProxySidecarContainer_RunAsProxyUID(t *testing.T) {
 	}
 	if sc.RunAsGroup == nil || *sc.RunAsGroup != cfg.Proxy.UID {
 		t.Errorf("proxy-sidecar RunAsGroup = %v, want Proxy.UID %d", sc.RunAsGroup, cfg.Proxy.UID)
-	}
-}
-
-// enforce-drop mode emits MODE / PROXY_UID / CLUSTER_CIDRS and none of the
-// redirect-only vars (POD_IP, OUTBOUND_PORTS_EXCLUDE).
-func TestBuildProxyInitContainer_EnforceDrop(t *testing.T) {
-	cfg := config.CompiledDefaults()
-	builder := NewContainerBuilder(cfg)
-	container := builder.BuildProxyInitContainer("enforce-drop", "", "")
-
-	got := map[string]string{}
-	for _, e := range container.Env {
-		if e.ValueFrom != nil {
-			t.Errorf("enforce-drop env %q must be a literal, not ValueFrom", e.Name)
-		}
-		got[e.Name] = e.Value
-	}
-	if got["MODE"] != "enforce-drop" {
-		t.Errorf("MODE = %q, want enforce-drop", got["MODE"])
-	}
-	if want := strconv.FormatInt(cfg.Proxy.UID, 10); got["PROXY_UID"] != want {
-		t.Errorf("PROXY_UID = %q, want %q", got["PROXY_UID"], want)
-	}
-	if want := strings.Join(cfg.Proxy.ClusterCIDRs, ","); got["CLUSTER_CIDRS"] != want {
-		t.Errorf("CLUSTER_CIDRS = %q, want %q", got["CLUSTER_CIDRS"], want)
-	}
-	if _, ok := got["POD_IP"]; ok {
-		t.Error("enforce-drop must not set POD_IP")
-	}
-	if _, ok := got["OUTBOUND_PORTS_EXCLUDE"]; ok {
-		t.Error("enforce-drop must not set OUTBOUND_PORTS_EXCLUDE")
 	}
 }
 

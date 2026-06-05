@@ -300,7 +300,7 @@ func (b *ContainerBuilder) BuildProxySidecarContainerWithPorts(spireEnabled bool
 		Resources: b.cfg.Resources.AuthBridge,
 		SecurityContext: &corev1.SecurityContext{
 			// Run as the dedicated proxy UID (default 1337), the SAME value the
-			// proxy-init enforce-drop guard exempts via `--uid-owner $PROXY_UID`.
+			// proxy-init enforce-redirect guard exempts via `--uid-owner $PROXY_UID`.
 			// Deriving both from b.cfg.Proxy.UID keeps the exempted UID in lockstep
 			// with the process it exempts (a hardcoded literal could drift and
 			// silently break the proxy's own egress). Matches the envoy builder.
@@ -463,9 +463,6 @@ const mandatoryOutboundExclude = "8080"
 //     REDIRECTs external TCP bypassing the forward proxy to the transparent
 //     listener (TRANSPARENT_PORT) and DROPs non-TCP. Driven by PROXY_UID +
 //     CLUSTER_CIDRS + TRANSPARENT_PORT; the exclude args do not apply.
-//   - "enforce-drop" (proxy-sidecar): a fail-closed egress guard that DROPs any
-//     egress bypassing the forward proxy. Driven by PROXY_UID + CLUSTER_CIDRS;
-//     the exclude args do not apply (the script ignores them in this mode).
 func (b *ContainerBuilder) BuildProxyInitContainer(mode ProxyInitMode, outboundPortsExclude, inboundPortsExclude string) corev1.Container {
 	var env []corev1.EnvVar
 	switch mode {
@@ -486,21 +483,6 @@ func (b *ContainerBuilder) BuildProxyInitContainer(mode ProxyInitMode, outboundP
 			"mode", "enforce-redirect",
 			"proxyUID", b.cfg.Proxy.UID,
 			"transparentPort", b.cfg.Proxy.TransparentPort,
-			"clusterCIDRs", clusterCIDRs)
-	case ProxyInitModeEnforceDrop:
-		// PROXY_UID is exempted from the DROP and MUST match the proxy
-		// container's RunAsUser (both derive from b.cfg.Proxy.UID). CLUSTER_CIDRS
-		// are allowed direct; everything else egressing the pod is dropped.
-		// POD_IP and the redirect-only exclude vars are unused in this mode.
-		clusterCIDRs := strings.Join(b.cfg.Proxy.ClusterCIDRs, ",")
-		env = []corev1.EnvVar{
-			{Name: "MODE", Value: string(ProxyInitModeEnforceDrop)},
-			{Name: "PROXY_UID", Value: fmt.Sprintf("%d", b.cfg.Proxy.UID)},
-			{Name: "CLUSTER_CIDRS", Value: clusterCIDRs},
-		}
-		builderLog.Info("building ProxyInit Container",
-			"mode", "enforce-drop",
-			"proxyUID", b.cfg.Proxy.UID,
 			"clusterCIDRs", clusterCIDRs)
 	case ProxyInitModeRedirect:
 		outboundValue := buildOutboundExcludeValue(outboundPortsExclude)
