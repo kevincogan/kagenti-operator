@@ -69,11 +69,9 @@ const (
 	AnnotationRestartPending = "kagenti.io/restart-pending"
 
 	// Condition types for AgentRuntime status.
-	ConditionTypeReady            = "Ready"
-	ConditionTypeTargetResolved   = "TargetResolved"
-	ConditionTypeConfigResolved   = "ConfigResolved"
-	ConditionTypeCardFetched      = "CardFetched"
-	ConditionTypeSkillsDiscovered = "SkillsDiscovered"
+	ConditionTypeReady          = "Ready"
+	ConditionTypeTargetResolved = "TargetResolved"
+	ConditionTypeConfigResolved = "ConfigResolved"
 
 	// AnnotationLastCardFetchHash stores the change-detection key used to skip
 	// redundant card fetches when the workload's pod template has not changed.
@@ -807,8 +805,6 @@ func (r *AgentRuntimeReconciler) fetchAndUpdateCard(ctx context.Context, rt *age
 	if !r.EnableCardDiscovery {
 		if rt.Status.Card != nil {
 			rt.Status.Card = nil
-			r.setCondition(rt, ConditionTypeCardFetched, metav1.ConditionFalse, "DiscoveryDisabled",
-				"Card discovery is disabled; stale card data cleared")
 		}
 		return
 	}
@@ -820,21 +816,17 @@ func (r *AgentRuntimeReconciler) fetchAndUpdateCard(ctx context.Context, rt *age
 		lastHash = annotations[AnnotationLastCardFetchHash]
 	}
 	if changeKey != "" && changeKey == lastHash && rt.Status.Card != nil {
-		r.setCondition(rt, ConditionTypeCardFetched, metav1.ConditionTrue, "FetchSkipped",
-			"Pod template unchanged; existing card data still valid")
 		return
 	}
 
 	if ready, msg := r.checkWorkloadReady(ctx, rt.Namespace, rt.Spec.TargetRef); !ready {
 		logger.V(1).Info("Workload not ready for card discovery", "reason", msg)
-		r.setCondition(rt, ConditionTypeCardFetched, metav1.ConditionFalse, "WorkloadNotReady", msg)
 		return
 	}
 
 	svc, port, err := r.resolveServiceForWorkload(ctx, rt.Namespace, rt.Spec.TargetRef)
 	if err != nil {
 		logger.V(1).Info("Service resolution failed for card discovery", "error", err)
-		r.setCondition(rt, ConditionTypeCardFetched, metav1.ConditionFalse, "ServiceNotFound", err.Error())
 		return
 	}
 
@@ -842,7 +834,6 @@ func (r *AgentRuntimeReconciler) fetchAndUpdateCard(ctx context.Context, rt *age
 	cardData, fetchResult, transportSecurity, err := r.fetchCard(ctx, rt, svc, port, protocol)
 	if err != nil {
 		logger.Error(err, "Card fetch failed", "workload", rt.Spec.TargetRef.Name)
-		r.setCondition(rt, ConditionTypeCardFetched, metav1.ConditionFalse, "FetchFailed", err.Error())
 		return
 	}
 
@@ -879,13 +870,6 @@ func (r *AgentRuntimeReconciler) fetchAndUpdateCard(ctx context.Context, rt *age
 	}
 
 	rt.Status.Card = cardStatus
-
-	conditionReason := "Fetched"
-	if transportSecurity == agentv1alpha1.TransportSecurityHTTP {
-		conditionReason = "FetchedInsecure"
-	}
-	r.setCondition(rt, ConditionTypeCardFetched, metav1.ConditionTrue, conditionReason,
-		fmt.Sprintf("Successfully fetched agent card for %s", cardData.Name))
 
 	r.persistCardFetchAnnotation(ctx, rt, changeKey)
 }

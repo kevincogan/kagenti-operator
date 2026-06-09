@@ -2098,15 +2098,6 @@ rules:
 				g.Expect(skills).To(BeEmpty())
 			}).Should(Succeed())
 
-			By("verifying SkillsDiscovered condition is absent")
-			Consistently(func(g Gomega) {
-				status, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].status}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(status).To(BeEmpty(), "SkillsDiscovered condition should not be set when feature gate is disabled")
-			}, 10*time.Second, 2*time.Second).Should(Succeed())
-
 			By("verifying operator did NOT mutate the Deployment (no skill volumes)")
 			Eventually(func(g Gomega) {
 				volumes, err := utils.KubectlGetJsonpath("deployment", "skill-discovery-agent",
@@ -2197,27 +2188,6 @@ rules:
 				g.Expect(raw).To(ContainSubstring("openshift-review"))
 			}).Should(Succeed())
 
-			By("verifying SkillsDiscovered condition is True with reason SkillsFound")
-			Eventually(func(g Gomega) {
-				status, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].status}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(status).To(Equal("True"))
-
-				reason, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].reason}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(reason).To(Equal("SkillsFound"))
-
-				message, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].message}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(message).To(ContainSubstring("2 linked skill(s)"))
-			}).Should(Succeed())
-
 			By("verifying Deployment was NOT mutated (no skill volumes added)")
 			Eventually(func(g Gomega) {
 				volumes, err := utils.KubectlGetJsonpath("deployment", "skill-discovery-agent",
@@ -2247,14 +2217,6 @@ rules:
 				g.Expect(raw).To(ContainSubstring("openshift-review"))
 			}).Should(Succeed())
 
-			By("verifying SkillsDiscovered message reflects new count")
-			Eventually(func(g Gomega) {
-				message, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].message}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(message).To(ContainSubstring("3 linked skill(s)"))
-			}).Should(Succeed())
 		})
 
 		It("should clear linkedSkills when annotation is removed", func() {
@@ -2274,14 +2236,6 @@ rules:
 				g.Expect(skills).To(BeEmpty())
 			}).Should(Succeed())
 
-			By("verifying SkillsDiscovered condition is removed")
-			Eventually(func(g Gomega) {
-				status, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].status}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(status).To(BeEmpty())
-			}).Should(Succeed())
 		})
 
 		It("should update linkedSkills and rollout pods when an OCI skill volume is removed", func() {
@@ -2340,15 +2294,6 @@ rules:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(raw).To(ContainSubstring("summarizer"))
 				g.Expect(raw).NotTo(ContainSubstring("openshift-review"))
-			}).Should(Succeed())
-
-			By("verifying SkillsDiscovered message reflects 1 skill")
-			Eventually(func(g Gomega) {
-				message, err := utils.KubectlGetJsonpath("agentruntime", "oci-skill-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].message}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(message).To(ContainSubstring("1 linked skill(s)"))
 			}).Should(Succeed())
 
 			By("verifying Deployment only has the summarizer volume")

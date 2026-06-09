@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -868,15 +867,6 @@ var _ = Describe("AgentRuntime Controller", func() {
 			}
 			r.fetchAndUpdateCard(ctx, rt)
 			Expect(rt.Status.Card).To(BeNil())
-
-			var cardCond *metav1.Condition
-			for i := range rt.Status.Conditions {
-				if rt.Status.Conditions[i].Type == ConditionTypeCardFetched {
-					cardCond = &rt.Status.Conditions[i]
-					break
-				}
-			}
-			Expect(cardCond).To(BeNil(), "No CardFetched condition should be set when card was already nil")
 		})
 
 		It("should clear existing card data when feature flag is disabled", func() {
@@ -897,17 +887,6 @@ var _ = Describe("AgentRuntime Controller", func() {
 			}
 			r.fetchAndUpdateCard(ctx, rt)
 			Expect(rt.Status.Card).To(BeNil())
-
-			var cardCond *metav1.Condition
-			for i := range rt.Status.Conditions {
-				if rt.Status.Conditions[i].Type == ConditionTypeCardFetched {
-					cardCond = &rt.Status.Conditions[i]
-					break
-				}
-			}
-			Expect(cardCond).NotTo(BeNil())
-			Expect(cardCond.Status).To(Equal(metav1.ConditionFalse))
-			Expect(cardCond.Reason).To(Equal("DiscoveryDisabled"))
 		})
 
 		It("should set ServiceNotFound condition when no service exists", func() {
@@ -930,17 +909,6 @@ var _ = Describe("AgentRuntime Controller", func() {
 			}
 			r.fetchAndUpdateCard(ctx, rt)
 			Expect(rt.Status.Card).To(BeNil())
-
-			var cardCond *metav1.Condition
-			for i := range rt.Status.Conditions {
-				if rt.Status.Conditions[i].Type == ConditionTypeCardFetched {
-					cardCond = &rt.Status.Conditions[i]
-					break
-				}
-			}
-			Expect(cardCond).NotTo(BeNil())
-			Expect(cardCond.Status).To(Equal(metav1.ConditionFalse))
-			Expect(cardCond.Reason).To(Equal("ServiceNotFound"))
 		})
 	})
 
@@ -971,16 +939,6 @@ var _ = Describe("AgentRuntime Controller", func() {
 			Expect(rt.Status.Card).NotTo(BeNil(), "existing card data should be retained on fetch failure")
 			Expect(rt.Status.Card.Name).To(Equal("previous-agent"))
 			Expect(rt.Status.Card.CardHash).To(Equal("abc123"))
-
-			var cardCond *metav1.Condition
-			for i := range rt.Status.Conditions {
-				if rt.Status.Conditions[i].Type == ConditionTypeCardFetched {
-					cardCond = &rt.Status.Conditions[i]
-					break
-				}
-			}
-			Expect(cardCond).NotTo(BeNil())
-			Expect(cardCond.Status).To(Equal(metav1.ConditionFalse))
 		})
 	})
 
@@ -993,7 +951,6 @@ var _ = Describe("AgentRuntime Controller", func() {
 			r := &AgentRuntimeReconciler{Client: k8sClient, EnableCardDiscovery: false}
 			r.fetchAndUpdateCard(ctx, rt)
 			Expect(rt.Status.Card).To(BeNil())
-			// No CardFetched condition should be set when card was already nil
 		})
 
 		It("should clear populated card data when flag is toggled off", func() {
@@ -1014,7 +971,7 @@ var _ = Describe("AgentRuntime Controller", func() {
 	})
 
 	Context("Card annotation patch must not wipe in-memory status", func() {
-		It("should persist CardFetched condition and card data after annotation patch", func() {
+		It("should persist card data and conditions after annotation patch", func() {
 			depName := "card-patch-deploy"
 			svcName := depName
 			dep := newDeployment(depName, namespace)
@@ -1066,12 +1023,6 @@ var _ = Describe("AgentRuntime Controller", func() {
 			Expect(rt.Status.Card.Version).To(Equal("2.0"))
 			Expect(rt.Status.Card.CardHash).NotTo(BeEmpty())
 
-			// CardFetched condition must survive (stub fetcher uses plain HTTP path)
-			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
-			Expect(cardCond).NotTo(BeNil(), "CardFetched condition must not be wiped by annotation patch")
-			Expect(cardCond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(cardCond.Reason).To(Equal("FetchedInsecure"))
-
 			// Conditions set before fetchAndUpdateCard must also survive
 			targetCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeTargetResolved)
 			Expect(targetCond).NotTo(BeNil(), "TargetResolved condition must not be wiped by annotation patch")
@@ -1113,11 +1064,6 @@ var _ = Describe("AgentRuntime Controller", func() {
 
 			Expect(rt.Status.Card).NotTo(BeNil())
 			Expect(rt.Status.Card.TransportSecurity).To(Equal(agentv1alpha1.TransportSecurityHTTP))
-
-			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
-			Expect(cardCond).NotTo(BeNil())
-			Expect(cardCond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(cardCond.Reason).To(Equal("FetchedInsecure"))
 		})
 
 		It("should set transportSecurity mTLS and reason Fetched for authenticated fetcher", func() {
@@ -1159,11 +1105,6 @@ var _ = Describe("AgentRuntime Controller", func() {
 			Expect(rt.Status.Card).NotTo(BeNil())
 			Expect(rt.Status.Card.TransportSecurity).To(Equal(agentv1alpha1.TransportSecurityMTLS))
 			Expect(rt.Status.Card.AttestedAgentSpiffeID).To(Equal("spiffe://trust.domain/agent"))
-
-			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
-			Expect(cardCond).NotTo(BeNil())
-			Expect(cardCond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(cardCond.Reason).To(Equal("Fetched"))
 		})
 
 		It("should update transport security when transport changes on re-fetch", func() {
@@ -1220,181 +1161,6 @@ var _ = Describe("AgentRuntime Controller", func() {
 			r2.fetchAndUpdateCard(ctx, rt)
 			Expect(rt.Status.Card).NotTo(BeNil())
 			Expect(rt.Status.Card.TransportSecurity).To(Equal(agentv1alpha1.TransportSecurityHTTP))
-
-			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
-			Expect(cardCond).NotTo(BeNil())
-			Expect(cardCond.Reason).To(Equal("FetchedInsecure"))
-		})
-	})
-
-	Context("Unified condition model (US2)", func() {
-		It("should set WorkloadNotReady when Deployment has zero readyReplicas", func() {
-			depName := "unready-deploy"
-			dep := newDeployment(depName, namespace)
-			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, dep) }()
-
-			// Deployment starts with 0 readyReplicas (default)
-
-			svc := &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{Name: depName, Namespace: namespace},
-				Spec: corev1.ServiceSpec{
-					Selector: map[string]string{"app": depName},
-					Ports:    []corev1.ServicePort{{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP}},
-				},
-			}
-			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, svc) }()
-
-			rt := newAgentRuntime("unready-rt", namespace, depName, agentv1alpha1.RuntimeTypeAgent)
-			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, rt) }()
-
-			r := &AgentRuntimeReconciler{
-				Client:              k8sClient,
-				EnableCardDiscovery: true,
-				AgentFetcher: &stubCardFetcher{
-					card: &agentv1alpha1.AgentCardData{Name: "Agent", Version: "1.0"},
-				},
-			}
-			r.fetchAndUpdateCard(ctx, rt)
-
-			Expect(rt.Status.Card).To(BeNil())
-			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
-			Expect(cardCond).NotTo(BeNil())
-			Expect(cardCond.Status).To(Equal(metav1.ConditionFalse))
-			Expect(cardCond.Reason).To(Equal("WorkloadNotReady"))
-		})
-
-		It("should set ServiceNotFound when workload is ready but no Service exists", func() {
-			depName := "ready-no-svc-deploy"
-			dep := newDeployment(depName, namespace)
-			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, dep) }()
-
-			setDeploymentReady(depName, namespace)
-
-			rt := newAgentRuntime("ready-no-svc-rt", namespace, depName, agentv1alpha1.RuntimeTypeAgent)
-			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, rt) }()
-
-			r := &AgentRuntimeReconciler{
-				Client:              k8sClient,
-				EnableCardDiscovery: true,
-				AgentFetcher: &stubCardFetcher{
-					card: &agentv1alpha1.AgentCardData{Name: "Agent", Version: "1.0"},
-				},
-			}
-			r.fetchAndUpdateCard(ctx, rt)
-
-			Expect(rt.Status.Card).To(BeNil())
-			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
-			Expect(cardCond).NotTo(BeNil())
-			Expect(cardCond.Status).To(Equal(metav1.ConditionFalse))
-			Expect(cardCond.Reason).To(Equal("ServiceNotFound"))
-		})
-
-		It("should set DiscoveryDisabled when feature flag is off", func() {
-			now := metav1.Now()
-			rt := &agentv1alpha1.AgentRuntime{
-				ObjectMeta: metav1.ObjectMeta{Name: "us2-disabled-rt", Namespace: namespace},
-				Status: agentv1alpha1.AgentRuntimeStatus{
-					Card: &agentv1alpha1.CardStatus{
-						AgentCardData:     agentv1alpha1.AgentCardData{Name: "old"},
-						LastCardFetchTime: &now,
-					},
-				},
-			}
-			r := &AgentRuntimeReconciler{Client: k8sClient, EnableCardDiscovery: false}
-			r.fetchAndUpdateCard(ctx, rt)
-
-			Expect(rt.Status.Card).To(BeNil())
-			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
-			Expect(cardCond).NotTo(BeNil())
-			Expect(cardCond.Status).To(Equal(metav1.ConditionFalse))
-			Expect(cardCond.Reason).To(Equal("DiscoveryDisabled"))
-		})
-	})
-
-	Context("FetchSkipped and FetchFailed conditions (US2)", func() {
-		It("should set FetchSkipped when pod template has not changed", func() {
-			depName := "skip-fetch-deploy"
-			dep := newDeployment(depName, namespace)
-			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, dep) }()
-			setDeploymentReady(depName, namespace)
-
-			svc := &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{Name: depName, Namespace: namespace},
-				Spec: corev1.ServiceSpec{
-					Selector: map[string]string{"app": depName},
-					Ports:    []corev1.ServicePort{{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP}},
-				},
-			}
-			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, svc) }()
-
-			rt := newAgentRuntime("skip-fetch-rt", namespace, depName, agentv1alpha1.RuntimeTypeAgent)
-			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, rt) }()
-
-			r := &AgentRuntimeReconciler{
-				Client:              k8sClient,
-				EnableCardDiscovery: true,
-				AgentFetcher: &stubCardFetcher{
-					card: &agentv1alpha1.AgentCardData{Name: "Agent", Version: "1.0"},
-				},
-			}
-
-			// First fetch succeeds and persists the change key annotation
-			r.fetchAndUpdateCard(ctx, rt)
-			Expect(rt.Status.Card).NotTo(BeNil())
-
-			// Second fetch with unchanged template should skip
-			r.fetchAndUpdateCard(ctx, rt)
-
-			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
-			Expect(cardCond).NotTo(BeNil())
-			Expect(cardCond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(cardCond.Reason).To(Equal("FetchSkipped"))
-		})
-
-		It("should set FetchFailed when fetcher returns an error", func() {
-			depName := "fetch-fail-deploy"
-			dep := newDeployment(depName, namespace)
-			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, dep) }()
-			setDeploymentReady(depName, namespace)
-
-			svc := &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{Name: depName, Namespace: namespace},
-				Spec: corev1.ServiceSpec{
-					Selector: map[string]string{"app": depName},
-					Ports:    []corev1.ServicePort{{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP}},
-				},
-			}
-			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, svc) }()
-
-			rt := newAgentRuntime("fetch-fail-rt", namespace, depName, agentv1alpha1.RuntimeTypeAgent)
-			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, rt) }()
-
-			r := &AgentRuntimeReconciler{
-				Client:              k8sClient,
-				EnableCardDiscovery: true,
-				AgentFetcher: &stubCardFetcher{
-					err: fmt.Errorf("connection refused"),
-				},
-			}
-			r.fetchAndUpdateCard(ctx, rt)
-
-			Expect(rt.Status.Card).To(BeNil())
-			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
-			Expect(cardCond).NotTo(BeNil())
-			Expect(cardCond.Status).To(Equal(metav1.ConditionFalse))
-			Expect(cardCond.Reason).To(Equal("FetchFailed"))
-			Expect(cardCond.Message).To(ContainSubstring("connection refused"))
 		})
 	})
 
