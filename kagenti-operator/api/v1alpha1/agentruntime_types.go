@@ -188,6 +188,10 @@ type CardStatus struct {
 
 // AgentRuntimeStatus defines the observed state of AgentRuntime.
 type AgentRuntimeStatus struct {
+	// ObservedGeneration is the most recent generation observed by the controller.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// Phase is the high-level state of the AgentRuntime
 	// +optional
 	Phase RuntimePhase `json:"phase,omitempty"`

@@ -137,6 +137,8 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	rt.Status.ObservedGeneration = rt.Generation
+
 	// 2. Handle deletion
 	if !rt.DeletionTimestamp.IsZero() {
 		return r.handleDeletion(ctx, rt)

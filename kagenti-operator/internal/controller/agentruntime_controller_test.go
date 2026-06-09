@@ -252,6 +252,31 @@ var _ = Describe("AgentRuntime Controller", func() {
 		})
 	})
 
+	Context("When setting observedGeneration", func() {
+		It("should set status.observedGeneration to metadata.generation after reconcile", func() {
+			dep := newDeployment("obsgen-deploy", namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+
+			rt := newAgentRuntime("obsgen-rt", namespace, "obsgen-deploy", agentv1alpha1.RuntimeTypeAgent)
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			r := newReconciler()
+			nn := types.NamespacedName{Name: "obsgen-rt", Namespace: namespace}
+
+			// First reconcile: adds finalizer
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			// Second reconcile: full reconcile
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &agentv1alpha1.AgentRuntime{}
+			Expect(k8sClient.Get(ctx, nn, updated)).To(Succeed())
+			Expect(updated.Status.ObservedGeneration).To(Equal(updated.Generation))
+		})
+	})
+
 	Context("When setting status", func() {
 		It("should set status to Active with Ready condition", func() {
 			dep := newDeployment("status-deploy", namespace)
