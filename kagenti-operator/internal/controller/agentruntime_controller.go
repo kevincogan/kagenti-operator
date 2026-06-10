@@ -162,6 +162,9 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	r.setCondition(rt, ConditionTypeTargetResolved, metav1.ConditionTrue, "TargetFound",
+		fmt.Sprintf("%s %s resolved", rt.Spec.TargetRef.Kind, rt.Spec.TargetRef.Name))
+
 	// 4.1. Complete two-phase Sandbox restart if pending.
 	if rt.Spec.TargetRef.Kind == KindSandbox {
 		if result, done, err := r.completeSandboxRestart(ctx, rt); done {
@@ -249,9 +252,6 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeReady, "ConfigApplyError", err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
-
-	r.setCondition(rt, ConditionTypeTargetResolved, metav1.ConditionTrue, "TargetFound",
-		fmt.Sprintf("%s %s resolved", rt.Spec.TargetRef.Kind, rt.Spec.TargetRef.Name))
 
 	// 6.5. Discover linked skills from workload annotation (set by kagenti backend or user)
 	fg := r.getFeatureGates()
