@@ -246,6 +246,9 @@ var _ = Describe("AgentRuntime Controller", func() {
 			updatedRT := &agentv1alpha1.AgentRuntime{}
 			Expect(k8sClient.Get(ctx, nn, updatedRT)).To(Succeed())
 			Expect(updatedRT.Status.LinkedSkills).To(ConsistOf("skill-a", "skill-b"))
+
+			configCond := meta.FindStatusCondition(updatedRT.Status.Conditions, ConditionTypeConfigResolved)
+			Expect(configCond).NotTo(BeNil(), "ConfigResolved condition must survive the retry re-fetch")
 		})
 	})
 

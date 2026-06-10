@@ -259,27 +259,29 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		logger.V(1).Info("Failed to count configured pods", "error", err)
 	}
 
-	// 8. Update status (retry on conflict to avoid losing linkedSkills updates)
+	// 8. Update status (retry on conflict to preserve all conditions computed above)
+	rt.Status.ConfiguredPods = configuredPods
+	r.setPhase(rt, agentv1alpha1.RuntimePhaseActive)
+	r.setCondition(rt, ConditionTypeReady, metav1.ConditionTrue, "Configured",
+		fmt.Sprintf("Workload %s configured with config-hash %s", rt.Spec.TargetRef.Name, configResult.Hash[:12]))
+	if fg.SkillDiscovery {
+		rt.Status.LinkedSkills = linkedSkills
+		if len(linkedSkills) > 0 {
+			r.setCondition(rt, ConditionTypeSkillsDiscovered, metav1.ConditionTrue, "SkillsFound",
+				fmt.Sprintf("%d linked skill(s) discovered from workload annotation", len(linkedSkills)))
+		} else {
+			meta.RemoveStatusCondition(&rt.Status.Conditions, ConditionTypeSkillsDiscovered)
+		}
+	} else {
+		rt.Status.LinkedSkills = nil
+		meta.RemoveStatusCondition(&rt.Status.Conditions, ConditionTypeSkillsDiscovered)
+	}
+	desired := rt.Status.DeepCopy()
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := r.Get(ctx, req.NamespacedName, rt); err != nil {
 			return err
 		}
-		rt.Status.ConfiguredPods = configuredPods
-		r.setPhase(rt, agentv1alpha1.RuntimePhaseActive)
-		r.setCondition(rt, ConditionTypeReady, metav1.ConditionTrue, "Configured",
-			fmt.Sprintf("Workload %s configured with config-hash %s", rt.Spec.TargetRef.Name, configResult.Hash[:12]))
-		if fg.SkillDiscovery {
-			rt.Status.LinkedSkills = linkedSkills
-			if len(linkedSkills) > 0 {
-				r.setCondition(rt, ConditionTypeSkillsDiscovered, metav1.ConditionTrue, "SkillsFound",
-					fmt.Sprintf("%d linked skill(s) discovered from workload annotation", len(linkedSkills)))
-			} else {
-				meta.RemoveStatusCondition(&rt.Status.Conditions, ConditionTypeSkillsDiscovered)
-			}
-		} else {
-			rt.Status.LinkedSkills = nil
-			meta.RemoveStatusCondition(&rt.Status.Conditions, ConditionTypeSkillsDiscovered)
-		}
+		rt.Status = *desired
 		return r.Status().Update(ctx, rt)
 	}); err != nil {
 		logger.Error(err, "Failed to update status")
