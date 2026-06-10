@@ -752,39 +752,20 @@ func UncommentCode(filename, target, prefix string) error {
 	return os.WriteFile(filename, out.Bytes(), 0644)
 }
 
-// ProbeWebhookTLS runs a temporary curl pod that verifies the webhook service
-// TLS handshake succeeds. Uses --connect-only to avoid waiting for an HTTP
-// response (the webhook only handles admission POST requests). Returns nil if
-// the TLS connection succeeds, or an error if not yet ready.
-func ProbeWebhookTLS(namespace string) error {
-	podName := fmt.Sprintf("webhook-probe-%d", time.Now().UnixNano()%100000)
-	svcURL := fmt.Sprintf("https://kagenti-operator-webhook-service.%s.svc:443", namespace)
-
-	overrides := `{
-		"spec": {
-			"securityContext": {"runAsNonRoot": true, "seccompProfile": {"type": "RuntimeDefault"}},
-			"containers": [{
-				"name": "` + podName + `",
-				"image": "curlimages/curl:latest",
-				"command": ["curl", "-sk", "--connect-only", "--connect-timeout", "5", "` + svcURL + `"],
-				"securityContext": {
-					"allowPrivilegeEscalation": false,
-					"capabilities": {"drop": ["ALL"]},
-					"runAsNonRoot": true,
-					"seccompProfile": {"type": "RuntimeDefault"}
-				}
-			}]
-		}
-	}`
-
-	cmd := exec.Command("kubectl", "run", podName,
-		"--rm", "-i", "--restart=Never",
-		"--image=curlimages/curl:latest",
-		"--overrides", overrides,
-		"-n", namespace)
-	_, err := Run(cmd)
+// ProbeWebhookReady checks that the controller pod is fully Ready (all
+// containers passing readiness probes). The manager's readiness probe gates
+// on full initialization including the webhook server startup.
+func ProbeWebhookReady(namespace string) error {
+	cmd := exec.Command("kubectl", "get", "pods",
+		"-l", "control-plane=controller-manager",
+		"-n", namespace,
+		"-o", "jsonpath={.items[0].status.conditions[?(@.type==\"Ready\")].status}")
+	output, err := Run(cmd)
 	if err != nil {
-		return fmt.Errorf("webhook TLS probe failed: %w", err)
+		return fmt.Errorf("failed to check controller pod readiness: %w", err)
+	}
+	if strings.TrimSpace(output) != "True" {
+		return fmt.Errorf("controller pod not yet Ready (status=%q)", output)
 	}
 	return nil
 }
