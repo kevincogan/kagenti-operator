@@ -213,11 +213,7 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if r.Recorder != nil {
 			r.Recorder.Event(rt, corev1.EventTypeWarning, "SCCBindingError", err.Error())
 		}
-		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
-		r.setCondition(rt, ConditionTypeReady, metav1.ConditionFalse, "SCCBindingError", err.Error())
-		if statusErr := r.Status().Update(ctx, rt); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status")
-		}
+		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeReady, "SCCBindingError", err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
@@ -272,15 +268,8 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		fmt.Sprintf("Workload %s configured with config-hash %s", rt.Spec.TargetRef.Name, configResult.Hash[:12]))
 	if fg.SkillDiscovery {
 		rt.Status.LinkedSkills = linkedSkills
-		if len(linkedSkills) > 0 {
-			r.setCondition(rt, ConditionTypeSkillsDiscovered, metav1.ConditionTrue, "SkillsFound",
-				fmt.Sprintf("%d linked skill(s) discovered from workload annotation", len(linkedSkills)))
-		} else {
-			meta.RemoveStatusCondition(&rt.Status.Conditions, ConditionTypeSkillsDiscovered)
-		}
 	} else {
 		rt.Status.LinkedSkills = nil
-		meta.RemoveStatusCondition(&rt.Status.Conditions, ConditionTypeSkillsDiscovered)
 	}
 	desired := rt.Status.DeepCopy()
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -725,7 +714,6 @@ func (r *AgentRuntimeReconciler) handleDeletion(ctx context.Context, rt *agentv1
 			delete(workloadLabels, LabelManagedBy)
 			acc.obj.SetLabels(workloadLabels)
 
-
 			// Remove kagenti.io/type from PodTemplateSpec pod labels so future pods
 			// are not presented to the webhook with the type label.
 			podLabels := acc.getPodLabels(acc.obj)
@@ -779,8 +767,8 @@ func (r *AgentRuntimeReconciler) setCondition(rt *agentv1alpha1.AgentRuntime, co
 	})
 }
 
-// updateErrorStatus sets the AgentRuntime phase to Error and updates a condition
-// with retry-on-conflict semantics, re-fetching the object on each attempt.
+// updateErrorStatus updates a condition to False with retry-on-conflict
+// semantics, re-fetching the object on each attempt.
 func (r *AgentRuntimeReconciler) updateErrorStatus(ctx context.Context, key types.NamespacedName, condType, reason, message string) {
 	logger := log.FromContext(ctx)
 	if statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -788,7 +776,6 @@ func (r *AgentRuntimeReconciler) updateErrorStatus(ctx context.Context, key type
 		if err := r.Get(ctx, key, latest); err != nil {
 			return err
 		}
-		r.setPhase(latest, agentv1alpha1.RuntimePhaseError)
 		r.setCondition(latest, condType, metav1.ConditionFalse, reason, message)
 		return r.Status().Update(ctx, latest)
 	}); statusErr != nil {
