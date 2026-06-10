@@ -76,8 +76,9 @@ func init() {
 }
 
 // getOperatorNamespace returns the namespace the operator is running in.
-// Reads from POD_NAMESPACE environment variable (set via downward API in deployment),
-// falling back to kagenti-system if not set.
+// In production, the manager_webhook_patch.yaml injects POD_NAMESPACE via
+// the downward API, so the fallback is effectively dead code. It exists for
+// local development and test runs where the webhook patch is not applied.
 func getOperatorNamespace() string {
 	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
 		return ns
@@ -308,6 +309,11 @@ func main() {
 			config.GetCertificate = metricsCertWatcher.GetCertificate
 		})
 	}
+
+	// ========================================
+	// Operator namespace resolution
+	// ========================================
+	controller.SetClusterDefaultsNamespace(getOperatorNamespace())
 
 	cmCacheNamespaces := buildConfigMapCacheNamespaces(
 		requireA2ASignature, spireTrustBundleConfigMapName, spireTrustBundleConfigMapNS,
