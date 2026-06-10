@@ -752,21 +752,21 @@ func UncommentCode(filename, target, prefix string) error {
 	return os.WriteFile(filename, out.Bytes(), 0644)
 }
 
-// ProbeWebhookTLS runs a temporary curl pod that attempts a TLS connection to the
-// webhook service. Returns nil if the webhook is accepting TLS connections, or an
-// error if it is not yet ready. Intended for use inside an Eventually() block.
+// ProbeWebhookTLS runs a temporary curl pod that verifies the webhook service
+// TLS handshake succeeds. Uses --connect-only to avoid waiting for an HTTP
+// response (the webhook only handles admission POST requests). Returns nil if
+// the TLS connection succeeds, or an error if not yet ready.
 func ProbeWebhookTLS(namespace string) error {
 	podName := fmt.Sprintf("webhook-probe-%d", time.Now().UnixNano()%100000)
-	svcURL := fmt.Sprintf("https://kagenti-operator-webhook-service.%s.svc:443/", namespace)
+	svcURL := fmt.Sprintf("https://kagenti-operator-webhook-service.%s.svc:443", namespace)
 
-	// Security context required for clusters with "restricted" PodSecurity enforcement.
 	overrides := `{
 		"spec": {
 			"securityContext": {"runAsNonRoot": true, "seccompProfile": {"type": "RuntimeDefault"}},
 			"containers": [{
 				"name": "` + podName + `",
 				"image": "curlimages/curl:latest",
-				"command": ["curl", "-sk", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "5", "` + svcURL + `"],
+				"command": ["curl", "-sk", "--connect-only", "--connect-timeout", "5", "` + svcURL + `"],
 				"securityContext": {
 					"allowPrivilegeEscalation": false,
 					"capabilities": {"drop": ["ALL"]},
@@ -782,12 +782,9 @@ func ProbeWebhookTLS(namespace string) error {
 		"--image=curlimages/curl:latest",
 		"--overrides", overrides,
 		"-n", namespace)
-	output, err := Run(cmd)
+	_, err := Run(cmd)
 	if err != nil {
 		return fmt.Errorf("webhook TLS probe failed: %w", err)
-	}
-	if strings.TrimSpace(output) == "000" {
-		return fmt.Errorf("webhook TLS probe got HTTP 000 (connection refused)")
 	}
 	return nil
 }
