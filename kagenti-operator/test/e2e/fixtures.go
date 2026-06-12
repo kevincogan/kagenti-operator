@@ -959,6 +959,7 @@ metadata:
   namespace: ` + authBridgeTestNamespace + `
 spec:
   type: agent
+  mtlsMode: disabled
   targetRef:
     apiVersion: apps/v1
     kind: Deployment
@@ -1092,6 +1093,7 @@ metadata:
   namespace: ` + authBridgeTestNamespace + `
 spec:
   type: agent
+  mtlsMode: disabled
   targetRef:
     apiVersion: apps/v1
     kind: Deployment
