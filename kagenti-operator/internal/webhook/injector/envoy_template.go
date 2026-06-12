@@ -72,19 +72,20 @@ func RenderEnvoyConfig(cfg *ResolvedConfig) (string, error) {
 		return cfg.EnvoyYAML, nil
 	}
 
-	// MTLSEnabled checks both "" and MTLSModeDisabled because
-	// ResolvedConfig leaves MTLSMode as "" when no source set it
-	// (CR / namespace ConfigMap / default — see ResolveConfig). The
-	// resolution chain only fills MTLSMode when something explicitly
-	// asked for it, so "" means "no opinion → treat as disabled".
+	// MTLSEnabled: empty string is treated as permissive (mTLS is on
+	// by default). Only MTLSModeDisabled explicitly disables mTLS.
+	effectiveMode := cfg.MTLSMode
+	if effectiveMode == "" {
+		effectiveMode = MTLSModePermissive
+	}
 	data := envoyTemplateData{
 		AdminPort:      cfg.Platform.Proxy.AdminPort,
 		OutboundPort:   cfg.Platform.Proxy.Port,
 		InboundPort:    cfg.Platform.Proxy.InboundProxyPort,
 		ExtProcPort:    defaultExtProcPort,
-		MTLSEnabled:    cfg.MTLSMode != "" && cfg.MTLSMode != MTLSModeDisabled,
-		MTLSPermissive: cfg.MTLSMode == MTLSModePermissive,
-		MTLSStrict:     cfg.MTLSMode == MTLSModeStrict,
+		MTLSEnabled:    effectiveMode != MTLSModeDisabled,
+		MTLSPermissive: effectiveMode == MTLSModePermissive,
+		MTLSStrict:     effectiveMode == MTLSModeStrict,
 	}
 
 	var buf bytes.Buffer

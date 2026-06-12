@@ -63,6 +63,10 @@ const (
 	// Value is a JSON array of skill names, set by the kagenti backend or the user.
 	AnnotationSkills = "kagenti.io/skills"
 
+	// AnnotationMTLSMode is the annotation applied to PodTemplateSpec to advertise the
+	// resolved mTLS posture. Read by authbridge sidecars for observability.
+	AnnotationMTLSMode = "kagenti.io/mtls-mode"
+
 	// AnnotationRestartPending marks a Sandbox that was scaled to 0 and needs
 	// to be scaled back to 1 on the next reconcile cycle. Two-phase restart
 	// avoids a race with the Sandbox controller's pod-name annotation.
@@ -72,6 +76,7 @@ const (
 	ConditionTypeReady          = "Ready"
 	ConditionTypeTargetResolved = "TargetResolved"
 	ConditionTypeConfigResolved = "ConfigResolved"
+	ConditionTypeMTLSReady      = "MTLSReady"
 
 	// AnnotationLastCardFetchHash stores the change-detection key used to skip
 	// redundant card fetches when the workload's pod template has not changed.
@@ -333,6 +338,12 @@ func (r *AgentRuntimeReconciler) applyWorkloadConfig(ctx context.Context, rt *ag
 
 	key := types.NamespacedName{Name: ref.Name, Namespace: rt.Namespace}
 
+	// Resolve mTLS mode: CR value takes precedence, default to "permissive".
+	mtlsMode := rt.Spec.MTLSMode
+	if mtlsMode == "" {
+		mtlsMode = "permissive"
+	}
+
 	var configHashChanged bool
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -348,7 +359,8 @@ func (r *AgentRuntimeReconciler) applyWorkloadConfig(ctx context.Context, rt *ag
 		alreadyConfigured := currentWorkloadLabels[LabelAgentType] == string(rt.Spec.Type) &&
 			currentWorkloadLabels[LabelManagedBy] == LabelManagedByValue &&
 			currentPodLabels[LabelAgentType] == string(rt.Spec.Type) &&
-			currentPodAnnotations[AnnotationConfigHash] == configHash
+			currentPodAnnotations[AnnotationConfigHash] == configHash &&
+			currentPodAnnotations[AnnotationMTLSMode] == mtlsMode
 
 		if alreadyConfigured {
 			return nil
@@ -375,19 +387,21 @@ func (r *AgentRuntimeReconciler) applyWorkloadConfig(ctx context.Context, rt *ag
 		podLabels[LabelAgentType] = string(rt.Spec.Type)
 		acc.setPodLabels(acc.obj, podLabels)
 
-		// Apply config-hash annotation to PodTemplateSpec
+		// Apply config-hash and mtls-mode annotations to PodTemplateSpec
 		podAnnotations := acc.getPodAnnotations(acc.obj)
 		if podAnnotations == nil {
 			podAnnotations = make(map[string]string)
 		}
 		podAnnotations[AnnotationConfigHash] = configHash
+		podAnnotations[AnnotationMTLSMode] = mtlsMode
 		acc.setPodAnnotations(acc.obj, podAnnotations)
 
 		logger.Info("Applying config to workload",
 			"workload", ref.Name,
 			"kind", ref.Kind,
 			"type", string(rt.Spec.Type),
-			"configHash", configHash[:12])
+			"configHash", configHash[:12],
+			"mtlsMode", mtlsMode)
 
 		return r.Update(ctx, acc.obj)
 	})
@@ -725,11 +739,12 @@ func (r *AgentRuntimeReconciler) handleDeletion(ctx context.Context, rt *agentv1
 			delete(podLabels, LabelAgentType)
 			acc.setPodLabels(acc.obj, podLabels)
 
-			// Remove kagenti.io/config-hash from PodTemplateSpec pod annotations.
-			// This triggers the rolling update that replaces existing injected pods,
-			// and leaves the workload annotation-clean for any future AR.
+			// Remove kagenti.io/config-hash and kagenti.io/mtls-mode from PodTemplateSpec
+			// pod annotations. This triggers the rolling update that replaces existing
+			// injected pods, and leaves the workload annotation-clean for any future AR.
 			podAnnotations := acc.getPodAnnotations(acc.obj)
 			delete(podAnnotations, AnnotationConfigHash)
+			delete(podAnnotations, AnnotationMTLSMode)
 			acc.setPodAnnotations(acc.obj, podAnnotations)
 
 			logger.Info("Removed kagenti labels and config-hash from workload on AgentRuntime deletion",

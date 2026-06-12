@@ -86,8 +86,8 @@ type AgentRuntimeSpec struct {
 	//
 	// Three valid values:
 	//
-	//   disabled    Plaintext between sidecars (default).
-	//   permissive  Inbound: byte-peek listener accepts both TLS and
+	//   disabled    Plaintext between sidecars.
+	//   permissive  (default) Inbound: byte-peek listener accepts both TLS and
 	//               plaintext on the same port. Outbound: tries TLS,
 	//               falls back to plaintext on handshake failure (one-line
 	//               WARN log per fallback). Use during rollout.
@@ -96,7 +96,7 @@ type AgentRuntimeSpec struct {
 	//               completes.
 	//
 	// Resolution: AgentRuntime CR > namespace authbridge-runtime-config
-	// mtls.mode > "disabled". Setting mtlsMode != disabled implicitly
+	// mtls.mode > "permissive". Setting mtlsMode != disabled implicitly
 	// requires SPIRE — the operator auto-enables spire for the workload.
 	//
 	// CR-empty vs CR="disabled" are observably different in
@@ -111,6 +111,7 @@ type AgentRuntimeSpec struct {
 	// process start).
 	//
 	// +optional
+	// +kubebuilder:default=permissive
 	// +kubebuilder:validation:Enum=disabled;permissive;strict
 	MTLSMode string `json:"mtlsMode,omitempty"`
 }

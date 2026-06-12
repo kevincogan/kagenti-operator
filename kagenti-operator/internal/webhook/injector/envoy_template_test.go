@@ -70,10 +70,9 @@ func TestRenderEnvoyConfig_TemplateRendering(t *testing.T) {
 }
 
 func TestRenderEnvoyConfig_MTLSDisabled_NoTLSBlocks(t *testing.T) {
-	// Default / disabled mode — no TLS blocks should render. Locks in
-	// the existing plaintext shape so a future template edit can't
-	// silently leak TLS config into pods that didn't ask for it.
-	for _, mode := range []string{"", MTLSModeDisabled} {
+	// Explicitly disabled mode — no TLS blocks should render.
+	// Empty string is now treated as permissive (mTLS on by default).
+	for _, mode := range []string{MTLSModeDisabled} {
 		t.Run("mode="+mode, func(t *testing.T) {
 			cfg := &ResolvedConfig{
 				Platform: config.CompiledDefaults(),

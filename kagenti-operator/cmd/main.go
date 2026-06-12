@@ -171,10 +171,10 @@ func main() {
 	flag.StringVar(&mlflowCAFile, "mlflow-ca-file", "",
 		"Path to PEM-encoded CA bundle for MLflow TLS verification (appended to system pool)")
 
-	flag.BoolVar(&enableCardDiscovery, "enable-card-discovery", false,
-		"Enable automatic agent card discovery from AgentRuntime workloads into status.card")
-	flag.BoolVar(&enableVerifiedFetch, "enable-verified-fetch", false,
-		"Enable mTLS-authenticated fetch of agent cards via SPIFFE identity")
+	flag.BoolVar(&enableCardDiscovery, "enable-card-discovery", true,
+		"Enable automatic agent card discovery from AgentRuntime workloads into status.card (set to false to disable)")
+	flag.BoolVar(&enableVerifiedFetch, "enable-verified-fetch", true,
+		"Enable mTLS-authenticated fetch of agent cards via SPIFFE identity (set to false as kill switch)")
 	flag.StringVar(&verifiedFetchSpiffeSocket, "verified-fetch-spiffe-socket",
 		"unix:///spiffe-workload-api/spire-agent.sock",
 		"SPIFFE Workload API socket path for verified fetch")
@@ -236,6 +236,30 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Startup info logs for defaults that changed in this release.
+	if enableCardDiscovery {
+		setupLog.Info("card discovery enabled by default; set --enable-card-discovery=false to disable")
+	}
+	if enableVerifiedFetch {
+		setupLog.Info("verified fetch enabled by default; set --enable-verified-fetch=false to disable")
+	}
+
+	// Deprecation warnings for legacy flags that are now superseded by
+	// mTLS defaults (permissive mode auto-enables SPIRE and identity binding).
+	for _, dep := range []struct {
+		name string
+		set  bool
+	}{
+		{"require-a2a-signature", requireA2ASignature},
+		{"signature-audit-mode", signatureAuditMode},
+		{"enforce-network-policies", enforceNetworkPolicies},
+	} {
+		if dep.set {
+			setupLog.Info("DEPRECATED: flag is superseded by mTLS permissive default; will be removed in a future release",
+				"flag", dep.name)
+		}
+	}
 
 	ctx := ctrl.SetupSignalHandler()
 

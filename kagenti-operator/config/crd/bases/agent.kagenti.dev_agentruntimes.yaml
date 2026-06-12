@@ -118,6 +118,7 @@ spec:
                     type: object
                 type: object
               mtlsMode:
+                default: permissive
                 description: |-
                   MTLSMode selects the mTLS posture between authbridge sidecars on
                   the proxy-sidecar / lite paths. envoy-sidecar handles transport
@@ -127,8 +128,8 @@ spec:
 
                   Three valid values:
 
-                    disabled    Plaintext between sidecars (default).
-                    permissive  Inbound: byte-peek listener accepts both TLS and
+                    disabled    Plaintext between sidecars.
+                    permissive  (default) Inbound: byte-peek listener accepts both TLS and
                                 plaintext on the same port. Outbound: tries TLS,
                                 falls back to plaintext on handshake failure (one-line
                                 WARN log per fallback). Use during rollout.
@@ -137,7 +138,7 @@ spec:
                                 completes.
 
                   Resolution: AgentRuntime CR > namespace authbridge-runtime-config
-                  mtls.mode > "disabled". Setting mtlsMode != disabled implicitly
+                  mtls.mode > "permissive". Setting mtlsMode != disabled implicitly
                   requires SPIRE — the operator auto-enables spire for the workload.
 
                   CR-empty vs CR="disabled" are observably different in

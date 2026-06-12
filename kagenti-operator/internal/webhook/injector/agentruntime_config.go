@@ -56,7 +56,7 @@ type AgentRuntimeOverrides struct {
 
 	// mTLS posture — from .spec.mtlsMode
 	// Nil = no per-workload override; the namespace's
-	// authbridge-runtime-config mtls.mode (if set) or "disabled"
+	// authbridge-runtime-config mtls.mode (if set) or "permissive"
 	// applies.
 	MTLSMode *string
 }

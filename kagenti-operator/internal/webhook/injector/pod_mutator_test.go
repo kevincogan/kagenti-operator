@@ -233,7 +233,11 @@ func TestInjectAuthBridge_RespectsExistingServiceAccountName(t *testing.T) {
 func TestInjectAuthBridge_NoSACreationWhenSpiffeHelperDisabled(t *testing.T) {
 	// Spiffe-helper is injected by default for agents. SA creation is skipped
 	// when spiffe-helper is explicitly opted out via its per-sidecar label.
-	m := newTestMutator(newAgentRuntime("test-ns", "my-agent"))
+	// MTLSMode must be set to "disabled" because the default (permissive) would
+	// auto-enable SPIRE, creating a ServiceAccount regardless of the spiffe-helper label.
+	rt := newAgentRuntime("test-ns", "my-agent")
+	rt.Spec.MTLSMode = "disabled"
+	m := newTestMutator(rt)
 	ctx := context.Background()
 
 	podSpec := &corev1.PodSpec{}

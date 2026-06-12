@@ -59,7 +59,7 @@ type ResolvedConfig struct {
 	// raw AuthBridgeRuntimeYAML so callers (e.g. RenderEnvoyConfig) can
 	// branch on the resolved values without re-parsing the YAML.
 	// AuthBridgeMode is "" when no source set it (caller picks the default).
-	// MTLSMode is "" when no source set it (caller treats as "disabled").
+	// MTLSMode is "" when no source set it (caller treats as "permissive").
 	AuthBridgeMode string
 	MTLSMode       string
 }

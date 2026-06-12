@@ -257,7 +257,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		}
 	}
 	if mtlsMode == "" {
-		mtlsMode = MTLSModeDisabled
+		mtlsMode = MTLSModePermissive
 		mtlsSource = "default"
 	}
 	// Defense in depth: the CRD enum check rejects unknown values at
@@ -270,10 +270,10 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	case MTLSModeDisabled, MTLSModePermissive, MTLSModeStrict:
 		// recognized, keep as-is
 	default:
-		mutatorLog.Info("WARN: unrecognized mtlsMode; defaulting to disabled",
+		mutatorLog.Info("WARN: unrecognized mtlsMode; defaulting to permissive",
 			"namespace", namespace, "crName", crName,
 			"unrecognized", mtlsMode, "source", mtlsSource)
-		mtlsMode = MTLSModeDisabled
+		mtlsMode = MTLSModePermissive
 		mtlsSource = "default-invalid-fallback"
 	}
 	mutatorLog.Info("resolved mTLS mode",
@@ -516,6 +516,15 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 				))
 		}
 
+		// Set MTLS_MODE env var on the authbridge container so it knows the
+		// resolved mTLS posture at runtime.
+		for i := range podSpec.Containers {
+			if podSpec.Containers[i].Name == AuthBridgeProxyContainerName {
+				setOrAddEnv(&podSpec.Containers[i], "MTLS_MODE", mtlsMode)
+				break
+			}
+		}
+
 		// Inject HTTP_PROXY env vars into all existing app containers
 		for i := range podSpec.Containers {
 			c := &podSpec.Containers[i]
@@ -618,6 +627,14 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 
 	if decision.EnvoyProxy.Inject && !containerExists(podSpec.Containers, EnvoyProxyContainerName) {
 		podSpec.Containers = append(podSpec.Containers, builder.BuildEnvoyProxyContainerWithSpireOption(spireEnabled))
+	}
+
+	// Set MTLS_MODE env var on the envoy-sidecar authbridge container.
+	for i := range podSpec.Containers {
+		if podSpec.Containers[i].Name == EnvoyProxyContainerName {
+			setOrAddEnv(&podSpec.Containers[i], "MTLS_MODE", mtlsMode)
+			break
+		}
 	}
 
 	if decision.ProxyInit.Inject && !containerExists(podSpec.InitContainers, ProxyInitContainerName) {
