@@ -139,6 +139,15 @@ func (c *PlatformConfig) Validate() error {
 	if c.Proxy.UID < 1 {
 		return fmt.Errorf("proxy.uid must be >= 1 (got %d): the proxy must not run as root and the egress-enforcement exemption keys on this UID", c.Proxy.UID)
 	}
+	// IptablesCmd, when set, pins the proxy-init iptables backend (IPTABLES_CMD).
+	// Restrict overrides to the binaries shipped in the proxy-init image so a
+	// chart typo fails fast at operator startup rather than as a per-injected-pod
+	// init crash. Empty is the default — proxy-init auto-detects from /proc/modules.
+	switch c.Proxy.IptablesCmd {
+	case "", "iptables", "iptables-nft", "iptables-legacy":
+	default:
+		return fmt.Errorf("proxy.iptablesCmd %q is not a recognized backend (want one of: \"\" (auto-detect), iptables, iptables-nft, iptables-legacy)", c.Proxy.IptablesCmd)
+	}
 	if c.Images.EnvoyProxy == "" {
 		return fmt.Errorf("images.envoyProxy is required")
 	}
