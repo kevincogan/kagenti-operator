@@ -209,7 +209,7 @@ var _ = Describe("Manager", Ordered, func() {
 			)
 			curlCmd := fmt.Sprintf(
 				"for i in 1 2 3 4 5; do "+
-					"curl -v -k --connect-timeout 15 --max-time 30 "+
+					"curl -v -f -k --connect-timeout 15 --max-time 30 "+
 					"-H 'Authorization: Bearer %s' %s "+
 					"&& exit 0; echo \"Attempt $i failed, retrying in 5s...\"; "+
 					"sleep 5; done; exit 1",
@@ -258,7 +258,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Succeeded"), "curl pod in wrong status")
 			}
-			Eventually(verifyCurlUp, 5*time.Minute).Should(Succeed())
+			Eventually(verifyCurlUp, 3*time.Minute).Should(Succeed())
 
 			By("getting the metrics by checking curl-metrics logs")
 			metricsOutput := getMetricsOutput()
