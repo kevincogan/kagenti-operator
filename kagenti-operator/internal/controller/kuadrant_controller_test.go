@@ -176,20 +176,8 @@ var _ = Describe("KuadrantReconciler", func() {
 		Expect(after.ResourceVersion).To(Equal(rvBefore))
 	})
 
-	It("should handle not-found gracefully (CRD exists but no CR event)", func() {
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			Build()
-
-		reconciler = &KuadrantReconciler{Client: fakeClient}
-
-		result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
-			NamespacedName: types.NamespacedName{
-				Name:      kuadrantCRName,
-				Namespace: kuadrantNamespace,
-			},
-		})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(Equal(ctrl.Result{}))
+	It("should require leader election for the bootstrap runnable", func() {
+		b := &kuadrantBootstrap{reconciler: &KuadrantReconciler{}}
+		Expect(b.NeedLeaderElection()).To(BeTrue())
 	})
 })

@@ -720,6 +720,8 @@ func main() {
 				os.Exit(1)
 			}
 			setupLog.Info("Kuadrant operand controller enabled")
+		} else {
+			setupLog.Info("Kuadrant enabled but CRD not found; controller not started")
 		}
 	}
 

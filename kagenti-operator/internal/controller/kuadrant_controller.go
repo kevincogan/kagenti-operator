@@ -143,6 +143,8 @@ type kuadrantBootstrap struct {
 	reconciler *KuadrantReconciler
 }
 
+func (b *kuadrantBootstrap) NeedLeaderElection() bool { return true }
+
 func (b *kuadrantBootstrap) Start(ctx context.Context) error {
 	kuadrantLogger.Info("Bootstrap: triggering initial Kuadrant reconcile")
 	req := ctrl.Request{
