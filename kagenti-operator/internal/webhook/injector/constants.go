@@ -81,3 +81,16 @@ const (
 	MTLSModePermissive = "permissive"
 	MTLSModeStrict     = "strict"
 )
+
+const (
+	// TLS bridge modes (AgentRuntime.spec.tlsBridgeMode).
+	TLSBridgeModeDisabled = "disabled"
+	TLSBridgeModeEnabled  = "enabled"
+
+	// TLSBridgeCAVolumeName is the Secret-backed volume carrying the per-agent
+	// cert-manager CA. tls.crt/tls.key go to the sidecar (signing); ca.crt goes
+	// to the agent (trust).
+	TLSBridgeCAVolumeName   = "tls-bridge-ca"
+	TLSBridgeCAMountPath    = "/etc/authbridge/tls-bridge-ca"
+	TLSBridgeCASecretSuffix = "-tls-bridge-ca"
+)
