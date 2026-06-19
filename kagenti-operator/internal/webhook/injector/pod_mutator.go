@@ -598,7 +598,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 				"reverse_proxy_backend": fmt.Sprintf("http://127.0.0.1:%d", newAgentPort),
 				"forward_proxy_addr":    fmt.Sprintf(":%d", forwardProxyPort),
 			},
-			mtlsMode, allowedAudiences, tlsBridgeMode)
+			mtlsMode, allowedAudiences, tlsBridgeMode, spireEnabled)
 		if err != nil {
 			return false, fmt.Errorf("proxy-sidecar per-agent ConfigMap: %w", err)
 		}
@@ -734,7 +734,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	// inbound listener (gated on MTLSEnabled) and UpstreamTlsContext on
 	// original_destination_tls (strict only).
 	perAgentCMName, err := m.ensurePerAgentConfigMap(ctx, namespace, crName,
-		ModeEnvoySidecar, nsConfig.AuthBridgeRuntimeYAML, nsConfig, nil, mtlsMode, allowedAudiences, "") // bridge never runs under envoy-sidecar
+		ModeEnvoySidecar, nsConfig.AuthBridgeRuntimeYAML, nsConfig, nil, mtlsMode, allowedAudiences, "", spireEnabled) // bridge never runs under envoy-sidecar
 	if err != nil {
 		return false, fmt.Errorf("envoy-sidecar per-agent ConfigMap: %w", err)
 	}
@@ -992,6 +992,7 @@ func (m *PodMutator) ensurePerAgentConfigMap(
 	mtlsMode string,
 	allowedAudiences []string,
 	tlsBridgeMode string,
+	spireEnabled bool,
 ) (string, error) {
 	cmName := perAgentConfigMapName(crName)
 
@@ -1074,6 +1075,14 @@ func (m *PodMutator) ensurePerAgentConfigMap(
 		}
 	} else {
 		delete(cfg, "tls_bridge")
+	}
+
+	if spireEnabled {
+		cfg["spiffe"] = map[string]interface{}{
+			"socket": m.GetPlatformConfig().Spiffe.SocketPath,
+		}
+	} else {
+		delete(cfg, "spiffe")
 	}
 
 	// Marshal back to YAML
